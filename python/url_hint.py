@@ -1,0 +1,584 @@
+# -*- coding: utf-8 -*-
+
+# Copyright (c) 2017 oakkitten
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+'''
+why yet another url script? well, this is what sets this one apart from others:
+
+    * always visible hints for urls (by default looks like ¹http://this)
+    * the hints change as the urls appear. hint ¹ always points to the last url, ² to the second last, etc
+    * you can open these with keyboard shortcuts — just one key press to open an url!
+    * it can be made to work even when your weechat is on a remote machine through your OS or terminal emulator
+    * a ready recipe for opening urls from your PuTTY!
+    
+so, this script prepends tiny digits to links, ¹ to the latest url, ² to the second latest, etc
+also it puts these urls in the window title, which you can grab using your OS automation, or your terminal emulator
+this is an example script in AutoHotkey that works with PuTTY (just install ahk, save this to file.ahk and run it):
+
+    #IfWinActive, ahk_class PuTTY
+        F1::
+        F2::
+        F3::
+        F4::
+        F5::
+            WinGetTitle, title
+            if (!RegExMatch(title, "[^""]+""urls: (.+)""", out))
+                Return
+            url := StrSplit(out1, " ")[SubStr(A_ThisHotkey, 2)]
+            If (RegExMatch(url, "^(?:http|www)"))
+                Run, %url%
+        Return
+    #IfWinActive
+
+you can use command /url_hint that replaces {url1}, {url2}, etc with according urls and then
+executes the result. for example, the following will open url 1 in your default browser
+
+    /url_hint /exec -bg xdg-open {url1}
+
+or in elinks a new tmux window
+
+    /url_hint /exec -bg tmux new-window elinks {url1}
+    
+you can bind opening of url 1 to f1 and url 2 to f2 like this, for example:
+
+    (press meta-k, then f1. that prints `meta2-11~`)
+    /alias add open_url /url_hint /exec -bg tmux new-window elinks {url$1}
+    /key bind meta2-11~ /open_url 1
+    /key bind meta2-12~ /open_url 2
+    
+WARNING: avoid passing urls to the shell as they aren't properly escaped
+
+settings:
+
+    * max_lines: the maximum number of lines that contain urls to track ("10")
+    * no_urls_title: title for buffers that don't contain urls ("weechat")
+    * prefix: the beginning of the title when there are urls ("urls: ")
+    * delimiter: what goes between the urls in the title (" ")
+    * postfix: the end of the title when there are urls ("")
+    * hints: comma-separated list of hints. evaluated, can contain colors ("⁰,¹,²,³,⁴,⁵,⁶,⁷,⁸,⁹")
+    * update_title: whether the script should put urls into the title ("on")
+    * safe_urls: whether the script will convert urls to their safe ascii equivalents ("off")
+
+to avoid auto renaming tmux windows use :set allow-rename off
+in PuTTy
+
+limitations:
+ 
+    * will not work with urls that have color codes inside them
+    * will be somewhat useless in merged and zoomed buffers
+
+version history:
+
+    0.1 (30 may 2017): added an option to make safe urls
+    0.0 (6 may 2017): initial release
+'''
+
+import re
+from urllib import quote as q, unquote as uq
+
+SCRIPT_NAME = "url_hint"
+SCRIPT_VERSION = "0.1"
+
+# the following code constructs a simple but neat regular expression for detecting urls
+# it's by no means perfect, but it will detect an url in quotes and parentheses, http iris,
+# punycode, urls followed by punctuation and such
+
+# 00-1f     c0 control chars
+# 20        space
+# 21-2f     !"#$%&'()*+,-./
+# 30-39         0123456789
+# 3a-40     :;<=>?@
+# 41-5a         ABCDEFGHIJKLMNOPQRSTUVWXYZ
+# 5b-60     [\]^_`
+# 61-7a         abcdefghijklmnopqrstuvwxyz
+# 7b-7e     {|}~
+# 7f        del
+# 80-9f     c1 control chars
+# a0        nbsp
+
+RE_IPV4_SEGMENT = ur"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
+RE_IPV6_SEGMENT = ur"[0-9A-Fa-f]{1,4}"
+
+RE_GOOD_ASCII_CHAR = ur"[A-Za-z0-9]"
+RE_BAD_CHAR = ur"\x00-\x20\x7f-\xa0\ufff0-\uffff\s"
+RE_GOOD_CHAR = ur"[^{bad}]".format(bad=RE_BAD_CHAR)
+RE_GOOD_HOST_CHAR = ur"[^\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\xa0\ufff0-\uffff]"
+RE_GOOD_TLD_CHAR = ur"[^\x00-\x40\x5b-\x60\x7b-\xa0\ufff0-\uffff]"
+
+RE_HOST_SEGMENT = ur"""(?:xn--(?:{good_ascii}+-)*{good_ascii}+|(?:{good_host}+-)*{good_host}+)""" \
+    .format(good_ascii=RE_GOOD_ASCII_CHAR, good_host=RE_GOOD_HOST_CHAR)
+RE_TLD = ur"(?:xn--{good_ascii}+|{good_tld}{{2,}})".format(good_ascii=RE_GOOD_ASCII_CHAR, good_tld=RE_GOOD_TLD_CHAR)
+
+# language=PythonVerboseRegExp
+RE_URL = ur"""
+    # url must be preceded by a word boundary, or a weechat color (a control character followed by a digit)
+    (?:(?<=\d)|\b)
+
+    # http:// or www  =1=
+    (https?://|www\.)
+
+    # optional user:pass at  =2:3=
+    (?:({good}+)(?::({good}+))?@)?
+
+    # ip or host  =4=
+    (
+        # ipv4
+        (?:(?:{s4}\.){{3}}{s4})
+    |
+        # ipv6 (no embedded ipv4 tho)
+        \[
+        (?:
+                                          (?:{s6}:){{7}} {s6}
+            |                          :: (?:{s6}:){{6}} {s6}
+            | (?:               {s6})? :: (?:{s6}:){{5}} {s6}
+            | (?:(?:{s6}:)?     {s6})? :: (?:{s6}:){{4}} {s6}
+            | (?:(?:{s6}:){{,2}}{s6})? :: (?:{s6}:){{3}} {s6}
+            | (?:(?:{s6}:){{,3}}{s6})? :: (?:{s6}:){{2}} {s6}
+            | (?:(?:{s6}:){{,4}}{s6})? :: (?:{s6}:)      {s6}
+            | (?:(?:{s6}:){{,5}}{s6})? ::                {s6}
+            | (?:(?:{s6}:){{,6}}{s6})? ::
+        )
+        \]
+    |
+        # domain name (a.b.c.com)
+        {host_segment}
+        (?:\.{host_segment})*
+        \.{tld}
+    )
+
+    # port?  =5=
+    (:\d{{1,5}})?
+
+    # / & the rest  =6=
+    (
+        /
+        # hello(world) in "hello(world))"
+        (?:
+            [^{bad}(]*
+            \(
+            [^{bad})]+
+            \)
+        )*
+        # any string (non-greedy!)
+        {good}*?
+    )?
+
+    # url must be directly followed by:
+    (?=
+        # some possible punctuation
+        # AND space or end of string
+        [\]>,.)!?:'"”@]*
+        (?:[{bad}]|$)
+    )
+    """
+RE_URL = RE_URL.format(s4=RE_IPV4_SEGMENT, s6=RE_IPV6_SEGMENT,
+                       bad=RE_BAD_CHAR, good=RE_GOOD_CHAR, host_segment=RE_HOST_SEGMENT, tld=RE_TLD)
+RE_URL = re.compile(RE_URL, re.U | re.X | re.I)
+
+###############################################################################
+###############################################################################
+###############################################################################
+
+class Url(object):
+    """
+    an object that represents an url
+    
+    exact (str): exact url, may contain non-ascii characters
+    safe (str): safe url with punycode and escaped characters
+    url (str): exact or safe, depending on current settings  
+    """
+    def __init__(self, match):
+        self.exact = match.group(0)
+        self._match = match
+        self._safe = None
+
+    @property
+    def safe(self):
+        if self._safe is None:
+            self._safe = Url._make_safe_url(self._match)
+        return self._safe
+
+    @property
+    def url(self):
+        return self.safe if C[SAFE] else self.exact
+
+    @staticmethod
+    def _make_safe_url(match):
+        prefix, user, password, ip_or_host, c_port, rest = match.groups()
+        safe = u(prefix)
+        if password:
+            safe += q(u(user)) + ":" + q(u(password)) + "@"
+        elif user:
+            safe += q(u(user)) + "@"
+        safe += ip_or_host.encode("idna")
+        if c_port: safe += u(c_port)
+        if rest:
+            end = ""
+            if "#" in rest:
+                rest, fragment = rest.split("#", 1)
+                end = "#" + q(uq(u(fragment)))
+            if "?" in rest:
+                rest, query = rest.split("?", 1)
+                end = "?" + q(uq(u(query)), safe="=&?/") + end
+            safe += "/".join(q(uq(u(segment)), safe="") for segment in rest.split("/"))
+            safe += end
+        return safe
+
+    __slots__ = "exact", "_match", "_safe"
+
+def u(uni):
+    return uni.encode('utf-8')
+
+def find_urls(string):
+    last_end = 0
+    for match in RE_URL.finditer(string):
+        start, end = match.span()
+        yield string[last_end:start]
+        yield Url(match)
+        last_end = end
+    yield string[last_end:]
+
+###############################################################################
+###############################################################################
+###############################################################################
+
+class Line(object):
+    """
+    an object that represents a buffer line with urls
+
+    pointer (str): a hex pointer to line object in weechat
+    urls ([str]): a list of urls in reverse order
+    iris ([str]): a list of iris in reverse order
+
+    from_own_lines(own_lines): returns a Line if it's visible and has urls, otherwise None
+    get_message(pointer): returns a pointer for a message
+    redraw(index): redraw the line and assign new hints to urls, given index of last hint
+    reset(): restore the line to its original condition
+    """
+    def __init__(self, pointer, data, message, parts):
+        self.pointer = pointer
+        self.urls = parts[-2::-2]
+        self._data = data
+        self._original_message = message
+        self._parts = [part.exact if isinstance(part, Url) else part for part in parts]
+        for i in range(1, len(self._parts) * 3 / 2, 3):
+            self._parts.insert(i, None)
+
+    @staticmethod
+    def from_own_lines(own_lines):
+        try:
+            last_line = weechat.hdata_pointer(H_LINES, own_lines, "last_line"); assert last_line
+            line_data = weechat.hdata_pointer(H_LINE, last_line, "data"); assert line_data
+            displayed = weechat.hdata_char(H_LINE_DATA, line_data, "displayed"); assert displayed
+            message = weechat.hdata_string(H_LINE_DATA, line_data, 'message'); assert message
+        except AssertionError:
+            return None
+        message = message.decode("utf-8")
+        parts = list(find_urls(message))       # parts = ["text", url, "text", url, ""]
+        if len(parts) == 1:
+            return None
+        return Line(last_line, line_data, message, parts)
+
+    def redraw(self, index):
+        self._parts[1::3] = (get_hint(i) for i in reversed(xrange(index, index + len(self.urls))))
+        self._set_message("".join(self._parts))
+
+    def reset(self):
+        self._set_message(self._original_message)
+
+    def _set_message(self, message):
+        weechat.hdata_update(H_LINE_DATA, self._data, {"message": message.encode("utf-8")})
+
+def get_hint(i):
+    hints = C[HINTS]
+    def do_it(j):
+        d, m = divmod(j, len(hints))
+        return do_it(d) + hints[m] if d else hints[m]
+    return do_it(i)
+
+###############################################################################
+###############################################################################
+###############################################################################
+
+class Buffer(object):
+    """
+    an object that represents a buffer
+
+    urls ([str]): a list of recent urls, in reverse order
+    
+    on_message(displayed): *must* be called on every message on a buffer
+    valid(): returns True if this buffer still exists in weechat and is safe to operate on
+    redraw(full_reset): redraw all lines. if full_reset is True, restores all lines to their original conditions
+    """
+    def __init__(self, pointer):
+        assert pointer
+        self.urls = []
+        self._pointer = pointer
+        self._own_lines = weechat.hdata_pointer(H_BUFFER, pointer, 'own_lines')
+        self._lines = []
+        self._last_position = 0
+
+    def on_message(self, displayed):
+        self._last_position += 1
+
+        if not displayed: return
+
+        last_line = Line.from_own_lines(self._own_lines)
+        if not last_line: return
+
+        last_line.position = self._last_position
+        self._lines.insert(0, last_line)
+        self.redraw()
+
+    def valid(self):
+        return weechat.hdata_check_pointer(H_BUFFER, weechat.hdata_get_list(H_BUFFER, "gui_buffers"), self._pointer)
+
+    def redraw(self, full_reset=False):
+        if not self._lines: return
+        max_lines = 0 if full_reset else C[MAX_LINES]
+        last_line = self._lines[0]
+        self.urls = []
+        walker = line_reverse_walker(last_line.pointer, last_line.position)
+        for n, line in enumerate(self._lines[:]):
+            for pointer, position in walker:
+                if line.pointer == pointer and line.position == position:
+                    if n >= max_lines:
+                        line.reset()
+                        self._lines.remove(line)
+                    else:
+                        line.redraw(len(self.urls) + 1)
+                        self.urls.extend(line.urls)
+                    break
+            else:
+                self._lines = self._lines[:n]
+                return
+
+def line_reverse_walker(pointer, position):
+    while pointer:
+        yield pointer, position
+        pointer = weechat.hdata_move(H_LINE, pointer, -1)
+        position -= 1
+
+###############################################################################
+###############################################################################
+###############################################################################
+
+buffers = type("", (dict,), {"__missing__": lambda self, p: self.setdefault(p, Buffer(p))})()
+current_buffer = ""
+
+# noinspection PyUnusedLocal
+def on_print(data, pointer, date, tags, displayed, highlighted, prefix, message):
+    displayed = int(displayed)          # https://weechat.org/files/doc/devel/weechat_plugin_api.en.html#_hook_print
+    buffers[pointer].on_message(displayed)
+    if displayed and C[UPDATE_TITLE] and current_buffer == pointer:
+        update_title()
+    return weechat.WEECHAT_RC_OK
+
+# noinspection PyUnusedLocal
+def on_buffer_switch(data, signal, pointer):
+    global current_buffer
+    if C[UPDATE_TITLE] and current_buffer != pointer:
+        current_buffer = pointer
+        update_title()
+    return weechat.WEECHAT_RC_OK
+
+def update_title():
+    if not current_buffer: return
+    urls = buffers[current_buffer].urls
+    title = (C[PREFIX] + C[DELIMITER].join(url.url for url in urls) + C[POSTFIX]) if urls else C[NO_URLS_TITLE]
+    weechat.window_set_title(title.encode("utf-8"))
+
+RE_REP = re.compile(r"{url(\d+)}", re.I)
+
+# noinspection PyUnusedLocal
+def url_hint(data, pointer, command):
+    urls = buffers[pointer].urls
+    def get_url(match):
+        try: return urls[int(match.group(1)) - 1].url
+        except IndexError: raise IndexError("could not replace " + match.group(0))
+    try: weechat.command(pointer, RE_REP.sub(get_url, command.decode("utf-8")).encode("utf-8"))
+    except IndexError as e: print_error(e.message)
+    return weechat.WEECHAT_RC_OK
+
+def print_error(text):
+    weechat.prnt("", "%s%s: %s" % (weechat.prefix("error"), SCRIPT_NAME, text))
+
+def redraw_everything(full_reset):
+    for pointer, buffer in buffers.items():
+        if buffer.valid():
+            buffer.redraw(full_reset)
+        else:
+            del buffers[pointer]
+    update_title()
+    return weechat.WEECHAT_RC_OK
+
+def exit_function():
+    return redraw_everything(full_reset=True)
+
+###############################################################################
+###############################################################################
+###############################################################################
+
+def hints_from_string(x):
+    hints = weechat.string_eval_expression(x.encode("utf-8"), "", "", "").decode("utf-8").split(",")
+    return None if len(hints) < 2 or any(not hint.strip() for hint in hints) else hints
+
+def boolean_from_string(x):
+    return x.lower() in ["on", "yes", "true", "y"]
+
+MAX_LINES = "max_lines"
+NO_URLS_TITLE = "no_urls_title"
+PREFIX, DELIMITER, POSTFIX = "prefix", "delimiter", "postfix"
+UPDATE_TITLE = "update_title"
+HINTS = "hints"
+SAFE = "safe_urls"
+
+# setting name: (default value, default value as stored in weechat, a method of converting/validating that
+# returns None if invalid, description)
+DEFAULT_CONFIG = {
+    MAX_LINES: ("10", "the maximum number of lines that contain urls to track", lambda x: int(x) if x.isdigit() and int(x) > 0 else None),
+    NO_URLS_TITLE: ("weechat", "title for buffers that don't contain urls", None),
+    PREFIX: ("urls: ", "the beginning of the title when there are urls", None),
+    DELIMITER: (" ", "what goes between the urls in the title", None),
+    POSTFIX: ("", "the end of the title when there are urls", None),
+    HINTS: (u"⁰,¹,²,³,⁴,⁵,⁶,⁷,⁸,⁹", "comma-separated list of hints. evaluated, can contain colors", hints_from_string),
+    UPDATE_TITLE: ("on", "whether the script should put urls into the title", boolean_from_string),
+    SAFE: ("off", "whether the script will convert urls to their safe ascii equivalents", boolean_from_string)
+}
+
+C = {}
+
+def load_config(*_):
+    for name, (default, description, from_string) in DEFAULT_CONFIG.iteritems():
+        value = None
+        if weechat.config_is_set_plugin(name):
+            value = weechat.config_get_plugin(name).decode("utf-8")
+            if from_string: value = from_string(value)
+        if value is None:
+            value = from_string(default) if from_string else default
+            weechat.config_set_plugin(name, default.encode("utf-8"))
+            weechat.config_set_desc_plugin(name, ('%s (default: "%s")' % (description, default)).encode("utf-8"))
+        C[name] = value
+    redraw_everything(full_reset=False)
+    return weechat.WEECHAT_RC_OK
+
+###############################################################################
+###############################################################################
+###############################################################################
+
+try:
+    # noinspection PyUnresolvedReferences
+    import weechat
+except ImportError:
+    # noinspection SpellCheckingInspection
+    TESTS = (
+        u"foo",
+        u"http://",
+        u"http://#",
+        u"http:// fail.com",
+        u"http://xm--we.co",
+        u"http://.www..foo.bar/",
+        u"http://url.c",
+        u"http://url.co1/,",
+        u"http://2.2.2.256/foo ",
+        u"http://[3210:123z::]:80/bye#",
+        u"www.mail-.lv",
+        u"http://squirrel",                                                 # this is valid but we don't want it anyway,
+        u"wut://server.com",
+        u"http://ser$ver.com",
+        u"http://ser_ver.com",
+
+        (u"http://url.co\u00a0m/,", u"http://url.co", "http://url.co"),     # non-breaking space
+        (u"[http://[3ffe:2a00:100:7031::1]", u"http://[3ffe:2a00:100:7031::1]", "http://[3ffe:2a00:100:7031::1]"),
+        (u"http://[1080::8:800:200C:417A]/foo)", u"http://[1080::8:800:200C:417A]/foo", "http://[1080::8:800:200C:417A]/foo"),
+        (u"http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80/index.html", u"http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80/index.html", "http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80/index.html"),
+        (u"http://[::3210]:80/hi", u"http://[::3210]:80/hi", "http://[::3210]:80/hi"),
+        (u"http://[3210:123::]:80/bye#", u"http://[3210:123::]:80/bye#", "http://[3210:123::]:80/bye#"),
+        (u"http://127.0.0.1/foo ", u"http://127.0.0.1/foo", "http://127.0.0.1/foo"),
+        (u"www.ma-il.lv/$_", u"www.ma-il.lv/$_", "www.ma-il.lv/%24_"),
+        (u"http://url.com", u"http://url.com", "http://url.com"),
+        (u"(http://url.com)", u"http://url.com", "http://url.com"),
+        (u"0HTTP://ПРЕЗИДЕНТ.РФ'", u"HTTP://ПРЕЗИДЕНТ.РФ", "HTTP://xn--d1abbgf6aiiy.xn--p1ai"),
+        (u"http://xn-d1abbgf6aiiy.xnpai/,", u"http://xn-d1abbgf6aiiy.xnpai/", "http://xn-d1abbgf6aiiy.xnpai/"),
+        (u"http://xn--d1abbgf6aiiy.xn--p1ai/,", u"http://xn--d1abbgf6aiiy.xn--p1ai/", "http://xn--d1abbgf6aiiy.xn--p1ai/"),
+        (u"  https://en.wikipedia.org/wiki/Bap_(food)\x01", u"https://en.wikipedia.org/wiki/Bap_(food)", "https://en.wikipedia.org/wiki/Bap_%28food%29"),
+        (u"\x03www.猫.jp", u"www.猫.jp", "www.xn--z7x.jp"),
+        (u'"https://en.wikipedia.org/wiki/Bap_(food)"', u"https://en.wikipedia.org/wiki/Bap_(food)", "https://en.wikipedia.org/wiki/Bap_%28food%29"),
+        (u"(https://ru.wikipedia.org/wiki/Мыло_(значения))", u"https://ru.wikipedia.org/wiki/Мыло_(значения)", "https://ru.wikipedia.org/wiki/%D0%9C%D1%8B%D0%BB%D0%BE_%28%D0%B7%D0%BD%D0%B0%D1%87%D0%B5%D0%BD%D0%B8%D1%8F%29"),
+        (u"http://foo.com/blah_blah_(wikipedia)_(again))", u"http://foo.com/blah_blah_(wikipedia)_(again)", "http://foo.com/blah_blah_%28wikipedia%29_%28again%29"),
+        (u"http://➡.ws/䨹", u"http://➡.ws/䨹", "http://xn--hgi.ws/%E4%A8%B9"),
+        (u" http://server.com/www.server.com ", u"http://server.com/www.server.com", "http://server.com/www.server.com"),
+        (u"http://➡.ws/♥?♥#♥'", u"http://➡.ws/♥?♥#♥", "http://xn--hgi.ws/%E2%99%A5?%E2%99%A5#%E2%99%A5"),
+        (u"http://➡.ws/♥/pa%2Fth;par%2Fams?que%2Fry=a&b=c", u"http://➡.ws/♥/pa%2Fth;par%2Fams?que%2Fry=a&b=c", "http://xn--hgi.ws/%E2%99%A5/pa%2Fth%3Bpar%2Fams?que/ry=a&b=c"),
+        (u"http://badutf8pcokay.com/%FF?%FE#%FF", u"http://badutf8pcokay.com/%FF?%FE#%FF", "http://badutf8pcokay.com/%FF?%FE#%FF")
+    )
+    ITERATIONS = 10000
+
+    print "testing the urls…\n"
+    for test in TESTS:
+        string, exact, safe = test if isinstance(test, tuple) else (test, None, None)
+        result = list(find_urls(string))
+        e, s = (result[1].exact, result[1].safe) if len(result) == 3 else (None, None)
+        if e == exact and s == safe: print u"OK `%s`: `%s`; `%s`" % (string, exact, safe)
+        else: print u"FAIL `%s`: `%s` → `%s`; `%s` → `%s`" % (string, exact, e, safe, s)
+
+    print "\ntesting speed…\n"
+    from timeit import Timer
+    urls = [test[0] for test in TESTS if isinstance(test, tuple)]
+    string = " lorem ipsum dolor sit amet ".join(urls)
+    time = Timer("list(find_urls(string))", "import re; from __main__ import find_urls, string").timeit(ITERATIONS)
+    print "%s lookups on a %s character long string with %s urls took %s seconds (%s seconds per iteration)" % \
+          (ITERATIONS, len(string), len(urls), time, time/ITERATIONS)
+else:
+    weechat.register(SCRIPT_NAME, "squirrel", SCRIPT_VERSION, "MIT", "Display hints for urls and open them with keyboard shortcuts", "exit_function", "")
+
+    WEECHAT_VERSION = int(weechat.info_get('version_number', '') or 0)
+    if WEECHAT_VERSION <= 0x00040000:
+        raise Exception("Need Weechat 4.0 or higher")
+
+    H_BUFFER = weechat.hdata_get("buffer")
+    H_LINES = weechat.hdata_get("lines")
+    H_LINE = weechat.hdata_get("line")
+    H_LINE_DATA = weechat.hdata_get("line_data")
+
+    load_config()
+
+    weechat.hook_print("", "", "", 1, "on_print", "")
+    weechat.hook_signal("buffer_switch", "on_buffer_switch", "")
+    weechat.hook_config("plugins.var.python." + SCRIPT_NAME + ".*", "load_config", "")
+
+    if not weechat.hook_command(SCRIPT_NAME, """Replaces {url1} with url hinted with a 1, etc. Example usage:
+    
+Open url 1 in your default browser:
+
+  /url_hint /exec -bg xdg-open {url1}
+
+Open url 1 in elinks in a new tmux window:
+
+  /url_hint /exec -bg tmux new-window elinks {url1}
+    
+Bind opening of url 1 to F1 and url 2 to F2:
+
+  (press meta-k, then f1. that prints "meta2-11~")
+  /alias add open_url /url_hint /exec -bg tmux new-window elinks {url$1}
+  /key bind meta2-11~ /open_url 1
+  /key bind meta2-12~ /open_url 2""", "<command>", "", "", "url_hint", ""):
+        print_error("could not hook command /" + SCRIPT_NAME)
