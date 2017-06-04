@@ -87,6 +87,7 @@ limitations:
 
 version history:
 
+    0.2 (4 june 2017): don't crash if a new buffer has the same pointer as the old one 
     0.1 (30 may 2017): added an option to make safe urls
     0.0 (6 may 2017): initial release
 '''
@@ -95,7 +96,7 @@ import re
 from urllib import quote as q, unquote as uq
 
 SCRIPT_NAME = "url_hint"
-SCRIPT_VERSION = "0.1"
+SCRIPT_VERSION = "0.2"
 
 # the following code constructs a simple but neat regular expression for detecting urls
 # it's by no means perfect, but it will detect an url in quotes and parentheses, http iris,
@@ -265,15 +266,15 @@ class Line(object):
     an object that represents a buffer line with urls
 
     pointer (str): a hex pointer to line object in weechat
-    urls ([str]): a list of urls in reverse order
-    iris ([str]): a list of iris in reverse order
+    urls ([Url]): a list of urls in reverse order
 
-    from_own_lines(own_lines): returns a Line if it's visible and has urls, otherwise None
-    get_message(pointer): returns a pointer for a message
+    from_buffer(buffer, message): returns a Line if it has urls, otherwise None
+    is_of_pointer(pointer): True if this line corresponds to given pointer
     redraw(index): redraw the line and assign new hints to urls, given index of last hint
     reset(): restore the line to its original condition
     """
     def __init__(self, pointer, data, message, parts):
+        assert pointer
         self.pointer = pointer
         self.urls = parts[-2::-2]
         self._data = data
@@ -283,19 +284,20 @@ class Line(object):
             self._parts.insert(i, None)
 
     @staticmethod
-    def from_own_lines(own_lines):
-        try:
-            last_line = weechat.hdata_pointer(H_LINES, own_lines, "last_line"); assert last_line
-            line_data = weechat.hdata_pointer(H_LINE, last_line, "data"); assert line_data
-            displayed = weechat.hdata_char(H_LINE_DATA, line_data, "displayed"); assert displayed
-            message = weechat.hdata_string(H_LINE_DATA, line_data, 'message'); assert message
-        except AssertionError:
-            return None
+    def from_buffer(buffer, message):
         message = message.decode("utf-8")
         parts = list(find_urls(message))       # parts = ["text", url, "text", url, ""]
-        if len(parts) == 1:
+        try:
+            assert len(parts) > 1
+            own_lines = weechat.hdata_pointer(H_BUFFER, buffer.pointer, "own_lines"); assert own_lines
+            last_line = weechat.hdata_pointer(H_LINES, own_lines, "last_line"); assert last_line
+            line_data = weechat.hdata_pointer(H_LINE, last_line, "data"); assert line_data
+        except AssertionError:
             return None
         return Line(last_line, line_data, message, parts)
+
+    def is_of_pointer(self, pointer):
+        return self.pointer == pointer and self._data == weechat.hdata_pointer(H_LINE, pointer, "data")
 
     def redraw(self, index):
         self._parts[1::3] = (get_hint(i) for i in reversed(xrange(index, index + len(self.urls))))
@@ -322,7 +324,7 @@ class Buffer(object):
     """
     an object that represents a buffer
 
-    urls ([str]): a list of recent urls, in reverse order
+    urls ([Url]): a list of recent urls, in reverse order
     
     on_message(displayed): *must* be called on every message on a buffer
     valid(): returns True if this buffer still exists in weechat and is safe to operate on
@@ -331,35 +333,41 @@ class Buffer(object):
     def __init__(self, pointer):
         assert pointer
         self.urls = []
-        self._pointer = pointer
-        self._own_lines = weechat.hdata_pointer(H_BUFFER, pointer, 'own_lines')
+        self.pointer = pointer
         self._lines = []
         self._last_position = 0
 
-    def on_message(self, displayed):
+    def on_message(self, message, displayed):
         self._last_position += 1
 
         if not displayed: return
 
-        last_line = Line.from_own_lines(self._own_lines)
+        last_line = Line.from_buffer(self, message)
         if not last_line: return
 
         last_line.position = self._last_position
         self._lines.insert(0, last_line)
         self.redraw()
 
+    # pointers can get reused, so this not only check the buffer pointer for validity, but checks if the last line of
+    # the buffer has the same pointer. it *still* might be not the same line, but it's mostly ok as we are going to
+    # deal with verified pointers from now on, and we also check that line's data pointer is the same, too
     def valid(self):
-        return weechat.hdata_check_pointer(H_BUFFER, weechat.hdata_get_list(H_BUFFER, "gui_buffers"), self._pointer)
+        if not self._lines or not weechat.hdata_check_pointer(H_BUFFER, HL_GUI_BUFFERS, self.pointer):
+            return False
+        own_lines = weechat.hdata_pointer(H_BUFFER, self.pointer, "own_lines")
+        return weechat.hdata_pointer(H_LINES, own_lines, "last_line") == self._lines[0].pointer
 
+    # this method assumes that _lines[0] exists and is a valid pointer. otherwise it's safe to call this method even if
+    # the buffer was recreated and now its pointer points to another buffer—the old lines will be simply removed
     def redraw(self, full_reset=False):
-        if not self._lines: return
         max_lines = 0 if full_reset else C[MAX_LINES]
         last_line = self._lines[0]
         self.urls = []
         walker = line_reverse_walker(last_line.pointer, last_line.position)
         for n, line in enumerate(self._lines[:]):
             for pointer, position in walker:
-                if line.pointer == pointer and line.position == position:
+                if line.position == position and line.is_of_pointer(pointer):
                     if n >= max_lines:
                         line.reset()
                         self._lines.remove(line)
@@ -387,7 +395,7 @@ current_buffer = ""
 # noinspection PyUnusedLocal
 def on_print(data, pointer, date, tags, displayed, highlighted, prefix, message):
     displayed = int(displayed)          # https://weechat.org/files/doc/devel/weechat_plugin_api.en.html#_hook_print
-    buffers[pointer].on_message(displayed)
+    buffers[pointer].on_message(message, displayed)
     if displayed and C[UPDATE_TITLE] and current_buffer == pointer:
         update_title()
     return weechat.WEECHAT_RC_OK
@@ -423,10 +431,8 @@ def print_error(text):
 
 def redraw_everything(full_reset):
     for pointer, buffer in buffers.items():
-        if buffer.valid():
-            buffer.redraw(full_reset)
-        else:
-            del buffers[pointer]
+        if buffer.valid(): buffer.redraw(full_reset)
+        else: del buffers[pointer]
     update_title()
     return weechat.WEECHAT_RC_OK
 
@@ -548,7 +554,8 @@ except ImportError:
     print "%s lookups on a %s character long string with %s urls took %s seconds (%s seconds per iteration)" % \
           (ITERATIONS, len(string), len(urls), time, time/ITERATIONS)
 else:
-    weechat.register(SCRIPT_NAME, "squirrel", SCRIPT_VERSION, "MIT", "Display hints for urls and open them with keyboard shortcuts", "exit_function", "")
+    if not weechat.register(SCRIPT_NAME, "squirrel", SCRIPT_VERSION, "MIT", "Display hints for urls and open them with keyboard shortcuts", "exit_function", ""):
+        raise Exception("Could not register script")
 
     WEECHAT_VERSION = int(weechat.info_get('version_number', '') or 0)
     if WEECHAT_VERSION <= 0x00040000:
@@ -558,10 +565,11 @@ else:
     H_LINES = weechat.hdata_get("lines")
     H_LINE = weechat.hdata_get("line")
     H_LINE_DATA = weechat.hdata_get("line_data")
+    HL_GUI_BUFFERS = weechat.hdata_get_list(H_BUFFER, "gui_buffers")
 
     load_config()
 
-    weechat.hook_print("", "", "", 1, "on_print", "")
+    weechat.hook_print("", "", "", 0, "on_print", "")
     weechat.hook_signal("buffer_switch", "on_buffer_switch", "")
     weechat.hook_config("plugins.var.python." + SCRIPT_NAME + ".*", "load_config", "")
 
