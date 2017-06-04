@@ -268,36 +268,24 @@ class Line(object):
     pointer (str): a hex pointer to line object in weechat
     urls ([Url]): a list of urls in reverse order
 
-    from_buffer(buffer, message): returns a Line if it has urls, otherwise None
     is_of_pointer(pointer): True if this line corresponds to given pointer
     redraw(index): redraw the line and assign new hints to urls, given index of last hint
     reset(): restore the line to its original condition
     """
-    def __init__(self, pointer, data, message, parts):
+    def __init__(self, pointer, message, parts):
         assert pointer
         self.pointer = pointer
         self.urls = parts[-2::-2]
-        self._data = data
+        self._data = weechat.hdata_pointer(H_LINE, pointer, "data")
         self._original_message = message
+        self._current_message = message
         self._parts = [part.exact if isinstance(part, Url) else part for part in parts]
         for i in range(1, len(self._parts) * 3 / 2, 3):
             self._parts.insert(i, None)
 
-    @staticmethod
-    def from_buffer(buffer, message):
-        message = message.decode("utf-8")
-        parts = list(find_urls(message))       # parts = ["text", url, "text", url, ""]
-        try:
-            assert len(parts) > 1
-            own_lines = weechat.hdata_pointer(H_BUFFER, buffer.pointer, "own_lines"); assert own_lines
-            last_line = weechat.hdata_pointer(H_LINES, own_lines, "last_line"); assert last_line
-            line_data = weechat.hdata_pointer(H_LINE, last_line, "data"); assert line_data
-        except AssertionError:
-            return None
-        return Line(last_line, line_data, message, parts)
-
     def is_of_pointer(self, pointer):
-        return self.pointer == pointer and self._data == weechat.hdata_pointer(H_LINE, pointer, "data")
+        return self.pointer == pointer and self._data == weechat.hdata_pointer(H_LINE, pointer, "data") and \
+               self._current_message == weechat.hdata_string(H_LINE_DATA, self._data, 'message').decode("utf-8")
 
     def redraw(self, index):
         self._parts[1::3] = (get_hint(i) for i in reversed(xrange(index, index + len(self.urls))))
@@ -307,6 +295,7 @@ class Line(object):
         self._set_message(self._original_message)
 
     def _set_message(self, message):
+        self._current_message = message
         weechat.hdata_update(H_LINE_DATA, self._data, {"message": message.encode("utf-8")})
 
 def get_hint(i):
@@ -324,6 +313,7 @@ class Buffer(object):
     """
     an object that represents a buffer
 
+    pointer (str): a hex pointer to buffer object in weechat
     urls ([Url]): a list of recent urls, in reverse order
     
     on_message(displayed): *must* be called on every message on a buffer
@@ -332,58 +322,56 @@ class Buffer(object):
     """
     def __init__(self, pointer):
         assert pointer
-        self.urls = []
         self.pointer = pointer
-        self._lines = []
-        self._last_position = 0
+        self.urls = []
+        self._lines = []                        # reverse order
 
     def on_message(self, message, displayed):
-        self._last_position += 1
+        if not displayed:
+            return
+        message = message.decode("utf-8")
+        parts = list(find_urls(message))        # parts = ["text", url, "text", url, ""]
+        if len(parts) < 3:
+            return
+        line = Line(self.get_last_line_pointer(), message, parts)
+        self._lines.insert(0, line)
+        self.redraw(last_pointer=line.pointer)
 
-        if not displayed: return
+    def redraw(self, last_pointer=None, full_reset=False):
+        if last_pointer is None:
+            last_pointer = self.get_last_line_pointer()
 
-        last_line = Line.from_buffer(self, message)
-        if not last_line: return
-
-        last_line.position = self._last_position
-        self._lines.insert(0, last_line)
-        self.redraw()
-
-    # pointers can get reused, so this not only check the buffer pointer for validity, but checks if the last line of
-    # the buffer has the same pointer. it *still* might be not the same line, but it's mostly ok as we are going to
-    # deal with verified pointers from now on, and we also check that line's data pointer is the same, too
-    def valid(self):
-        if not self._lines or not weechat.hdata_check_pointer(H_BUFFER, HL_GUI_BUFFERS, self.pointer):
-            return False
-        own_lines = weechat.hdata_pointer(H_BUFFER, self.pointer, "own_lines")
-        return weechat.hdata_pointer(H_LINES, own_lines, "last_line") == self._lines[0].pointer
-
-    # this method assumes that _lines[0] exists and is a valid pointer. otherwise it's safe to call this method even if
-    # the buffer was recreated and now its pointer points to another buffer—the old lines will be simply removed
-    def redraw(self, full_reset=False):
         max_lines = 0 if full_reset else C[MAX_LINES]
-        last_line = self._lines[0]
-        self.urls = []
-        walker = line_reverse_walker(last_line.pointer, last_line.position)
-        for n, line in enumerate(self._lines[:]):
-            for pointer, position in walker:
-                if line.position == position and line.is_of_pointer(pointer):
+        lines, urls = [], []
+        walker = line_reverse_walker(last_pointer)
+        for n, line in enumerate(self._lines):
+            for pointer in walker:
+                if line.is_of_pointer(pointer):
                     if n >= max_lines:
                         line.reset()
-                        self._lines.remove(line)
                     else:
-                        line.redraw(len(self.urls) + 1)
-                        self.urls.extend(line.urls)
+                        line.redraw(len(urls) + 1)
+                        urls += line.urls
+                        lines.append(line)
                     break
             else:
-                self._lines = self._lines[:n]
-                return
+                break
+        self._lines, self.urls = lines, urls
 
-def line_reverse_walker(pointer, position):
+    # return pointer to the last line, visible or not; None otherwise
+    def get_last_line_pointer(self):
+        try:
+            assert weechat.hdata_check_pointer(H_BUFFER, HL_GUI_BUFFERS, self.pointer)
+            own_lines = weechat.hdata_pointer(H_BUFFER, self.pointer, "own_lines"); assert own_lines
+            last_line = weechat.hdata_pointer(H_LINES, own_lines, "last_line"); assert last_line
+        except AssertionError:
+            return None
+        return last_line
+
+def line_reverse_walker(pointer):
     while pointer:
-        yield pointer, position
+        yield pointer
         pointer = weechat.hdata_move(H_LINE, pointer, -1)
-        position -= 1
 
 ###############################################################################
 ###############################################################################
@@ -431,8 +419,7 @@ def print_error(text):
 
 def redraw_everything(full_reset):
     for pointer, buffer in buffers.items():
-        if buffer.valid(): buffer.redraw(full_reset)
-        else: del buffers[pointer]
+        buffer.redraw(full_reset=full_reset)
     update_title()
     return weechat.WEECHAT_RC_OK
 
