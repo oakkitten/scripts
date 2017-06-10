@@ -87,6 +87,7 @@ limitations:
 
 version history:
 
+    0.3 (10 june 2017): don't fail when safe url encoding fails
     0.2 (4 june 2017): don't crash if a new buffer has the same pointer as the old one 
     0.1 (30 may 2017): added an option to make safe urls
     0.0 (6 may 2017): initial release
@@ -96,7 +97,7 @@ import re
 from urllib import quote as q, unquote as uq
 
 SCRIPT_NAME = "url_hint"
-SCRIPT_VERSION = "0.2"
+SCRIPT_VERSION = "0.3"
 
 # the following code constructs a simple but neat regular expression for detecting urls
 # it's by no means perfect, but it will detect an url in quotes and parentheses, http iris,
@@ -193,6 +194,7 @@ RE_URL = ur"""
 RE_URL = RE_URL.format(s4=RE_IPV4_SEGMENT, s6=RE_IPV6_SEGMENT,
                        bad=RE_BAD_CHAR, good=RE_GOOD_CHAR, host_segment=RE_HOST_SEGMENT, tld=RE_TLD)
 RE_URL = re.compile(RE_URL, re.U | re.X | re.I)
+RE_DOTS = re.compile(u"[\u002E\u3002\uFF0E\uFF61]", re.U)
 
 ###############################################################################
 ###############################################################################
@@ -229,7 +231,8 @@ class Url(object):
             safe += q(u(user)) + ":" + q(u(password)) + "@"
         elif user:
             safe += q(u(user)) + "@"
-        safe += ip_or_host.encode("idna")
+        try: safe += ip_or_host.encode("idna")
+        except UnicodeError: safe += ".".join(safe_label(label) for label in RE_DOTS.split(ip_or_host))
         if c_port: safe += u(c_port)
         if rest:
             end = ""
@@ -247,6 +250,10 @@ class Url(object):
 
 def u(uni):
     return uni.encode('utf-8')
+
+SAFE_HOST_LETTERS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz.1234567890")
+def safe_label(label):
+    return u(label) if set(label).issubset(SAFE_HOST_LETTERS) else "xn--" + label.lower().encode("punycode")
 
 def find_urls(string):
     last_end = 0
