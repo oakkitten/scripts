@@ -87,6 +87,7 @@ limitations:
 
 version history:
 
+    0.4 (18 june 2017): encode fewer characters for safe urls—helps with servers that don't follow the rfc
     0.3 (10 june 2017): don't fail when safe url encoding fails
     0.2 (4 june 2017): don't crash if a new buffer has the same pointer as the old one 
     0.1 (30 may 2017): added an option to make safe urls
@@ -94,10 +95,10 @@ version history:
 '''
 
 import re
-from urllib import quote as q, unquote as uq
+from urllib import quote, unquote
 
 SCRIPT_NAME = "url_hint"
-SCRIPT_VERSION = "0.3"
+SCRIPT_VERSION = "0.4"
 
 # the following code constructs a simple but neat regular expression for detecting urls
 # it's by no means perfect, but it will detect an url in quotes and parentheses, http iris,
@@ -137,10 +138,10 @@ RE_URL = ur"""
     # http:// or www  =1=
     (https?://|www\.)
 
-    # optional user:pass at  =2:3=
-    (?:({good}+)(?::({good}+))?@)?
+    # optional userinfo at  =2=
+    (?:([^{bad}@]*)@)?
 
-    # ip or host  =4=
+    # ip or host  =3=
     (
         # ipv4
         (?:(?:{s4}\.){{3}}{s4})
@@ -166,10 +167,10 @@ RE_URL = ur"""
         \.{tld}
     )
 
-    # port?  =5=
+    # port?  =4=
     (:\d{{1,5}})?
 
-    # / & the rest  =6=
+    # / & the rest  =5=
     (
         /
         # hello(world) in "hello(world))"
@@ -225,35 +226,50 @@ class Url(object):
 
     @staticmethod
     def _make_safe_url(match):
-        prefix, user, password, ip_or_host, c_port, rest = match.groups()
-        safe = u(prefix)
-        if password:
-            safe += q(u(user)) + ":" + q(u(password)) + "@"
-        elif user:
-            safe += q(u(user)) + "@"
+        prefix, userinfo, ip_or_host, c_port, rest = match.groups()
+        safe = prefix.encode("ascii")
+        if userinfo: safe += q(userinfo, safe=SAFE_USERINFO) + "@"
         try: safe += ip_or_host.encode("idna")
         except UnicodeError: safe += ".".join(safe_label(label) for label in RE_DOTS.split(ip_or_host))
-        if c_port: safe += u(c_port)
+        if c_port: safe += c_port.encode("ascii")
         if rest:
             end = ""
             if "#" in rest:
                 rest, fragment = rest.split("#", 1)
-                end = "#" + q(uq(u(fragment)))
+                end = "#" + q(fragment, safe=SAFE_FRAGMENT)
             if "?" in rest:
                 rest, query = rest.split("?", 1)
-                end = "?" + q(uq(u(query)), safe="=&?/") + end
-            safe += "/".join(q(uq(u(segment)), safe="") for segment in rest.split("/"))
+                end = "?" + q(query, safe=SAFE_QUERY) + end
+            safe += "/".join(q(segment, safe=SAFE_PATH) for segment in rest.split("/"))
             safe += end
         return safe
 
     __slots__ = "exact", "_match", "_safe"
 
-def u(uni):
-    return uni.encode('utf-8')
+# these are used to encode the url in a safe manner. basically it's url normalization, but it will not fail while
+# encoding invalid urls and it changes as little as possible
+# the following are direct quotes from https://tools.ietf.org/html/rfc3986
+#     unreserved    = ALPHA / DIGIT / "-" / "." / "_" / "~"
+#     sub-delims    = "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
+#     pct-encoded   = "%" HEXDIG HEXDIG
+#     pchar         = unreserved / pct-encoded / sub-delims / ":" / "@"
+#     userinfo      = *( unreserved / pct-encoded / sub-delims / ":" )
+#     segment       = *pchar
+#     query         = *( pchar / "/" / "?" )
+#     fragment      = *( pchar / "/" / "?" )
+# quote() takes the rest of unreserved characters by itself, so we only need to adjust it for the rest
+
+SUB_DELIMS = "!$&'()*+,;="
+SAFE_USERINFO = SUB_DELIMS + ":"
+SAFE_PATH = SUB_DELIMS + ":@"
+SAFE_FRAGMENT = SAFE_QUERY = SUB_DELIMS + ":@" + "/?"
+
+def q(uni, safe):
+    return quote(unquote(uni.encode("utf-8")), safe=safe)
 
 SAFE_HOST_LETTERS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz.1234567890")
 def safe_label(label):
-    return u(label) if set(label).issubset(SAFE_HOST_LETTERS) else "xn--" + label.lower().encode("punycode")
+    return label.encode("utf-8") if set(label).issubset(SAFE_HOST_LETTERS) else "xn--" + label.lower().encode("punycode")
 
 def find_urls(string):
     last_end = 0
@@ -513,22 +529,23 @@ except ImportError:
         (u"http://[::3210]:80/hi", u"http://[::3210]:80/hi", "http://[::3210]:80/hi"),
         (u"http://[3210:123::]:80/bye#", u"http://[3210:123::]:80/bye#", "http://[3210:123::]:80/bye#"),
         (u"http://127.0.0.1/foo ", u"http://127.0.0.1/foo", "http://127.0.0.1/foo"),
-        (u"www.ma-il.lv/$_", u"www.ma-il.lv/$_", "www.ma-il.lv/%24_"),
+        (u"www.ma-il.lv/$_", u"www.ma-il.lv/$_", "www.ma-il.lv/$_"),
         (u"http://url.com", u"http://url.com", "http://url.com"),
         (u"(http://url.com)", u"http://url.com", "http://url.com"),
         (u"0HTTP://ПРЕЗИДЕНТ.РФ'", u"HTTP://ПРЕЗИДЕНТ.РФ", "HTTP://xn--d1abbgf6aiiy.xn--p1ai"),
         (u"http://xn-d1abbgf6aiiy.xnpai/,", u"http://xn-d1abbgf6aiiy.xnpai/", "http://xn-d1abbgf6aiiy.xnpai/"),
         (u"http://xn--d1abbgf6aiiy.xn--p1ai/,", u"http://xn--d1abbgf6aiiy.xn--p1ai/", "http://xn--d1abbgf6aiiy.xn--p1ai/"),
-        (u"  https://en.wikipedia.org/wiki/Bap_(food)\x01", u"https://en.wikipedia.org/wiki/Bap_(food)", "https://en.wikipedia.org/wiki/Bap_%28food%29"),
+        (u"  https://en.wikipedia.org/wiki/Bap_(food)\x01", u"https://en.wikipedia.org/wiki/Bap_(food)", "https://en.wikipedia.org/wiki/Bap_(food)"),
         (u"\x03www.猫.jp", u"www.猫.jp", "www.xn--z7x.jp"),
-        (u'"https://en.wikipedia.org/wiki/Bap_(food)"', u"https://en.wikipedia.org/wiki/Bap_(food)", "https://en.wikipedia.org/wiki/Bap_%28food%29"),
-        (u"(https://ru.wikipedia.org/wiki/Мыло_(значения))", u"https://ru.wikipedia.org/wiki/Мыло_(значения)", "https://ru.wikipedia.org/wiki/%D0%9C%D1%8B%D0%BB%D0%BE_%28%D0%B7%D0%BD%D0%B0%D1%87%D0%B5%D0%BD%D0%B8%D1%8F%29"),
-        (u"http://foo.com/blah_blah_(wikipedia)_(again))", u"http://foo.com/blah_blah_(wikipedia)_(again)", "http://foo.com/blah_blah_%28wikipedia%29_%28again%29"),
+        (u'"https://en.wikipedia.org/wiki/Bap_(food)"', u"https://en.wikipedia.org/wiki/Bap_(food)", "https://en.wikipedia.org/wiki/Bap_(food)"),
+        (u"(https://ru.wikipedia.org/wiki/Мыло_(значения))", u"https://ru.wikipedia.org/wiki/Мыло_(значения)", "https://ru.wikipedia.org/wiki/%D0%9C%D1%8B%D0%BB%D0%BE_(%D0%B7%D0%BD%D0%B0%D1%87%D0%B5%D0%BD%D0%B8%D1%8F)"),
+        (u"http://foo.com/blah_blah_(wikipedia)_(again))", u"http://foo.com/blah_blah_(wikipedia)_(again)", "http://foo.com/blah_blah_(wikipedia)_(again)"),
         (u"http://➡.ws/䨹", u"http://➡.ws/䨹", "http://xn--hgi.ws/%E4%A8%B9"),
         (u" http://server.com/www.server.com ", u"http://server.com/www.server.com", "http://server.com/www.server.com"),
         (u"http://➡.ws/♥?♥#♥'", u"http://➡.ws/♥?♥#♥", "http://xn--hgi.ws/%E2%99%A5?%E2%99%A5#%E2%99%A5"),
-        (u"http://➡.ws/♥/pa%2Fth;par%2Fams?que%2Fry=a&b=c", u"http://➡.ws/♥/pa%2Fth;par%2Fams?que%2Fry=a&b=c", "http://xn--hgi.ws/%E2%99%A5/pa%2Fth%3Bpar%2Fams?que/ry=a&b=c"),
-        (u"http://badutf8pcokay.com/%FF?%FE#%FF", u"http://badutf8pcokay.com/%FF?%FE#%FF", "http://badutf8pcokay.com/%FF?%FE#%FF")
+        (u"http://➡.ws/♥/pa%2Fth;par%2Fams?que%2Fry=a&b=c", u"http://➡.ws/♥/pa%2Fth;par%2Fams?que%2Fry=a&b=c", "http://xn--hgi.ws/%E2%99%A5/pa%2Fth;par%2Fams?que/ry=a&b=c"),
+        (u"http://badutf8pcokay.com/%FF?%FE#%FF", u"http://badutf8pcokay.com/%FF?%FE#%FF", "http://badutf8pcokay.com/%FF?%FE#%FF"),
+        (u"http://website.com/path/is%2fslash/!$&'()*+,;=:@/path?query=!$&'()*+,;=:@?query#fragment!$&'()*+,;=:@#fragment", u"http://website.com/path/is%2fslash/!$&'()*+,;=:@/path?query=!$&'()*+,;=:@?query#fragment!$&'()*+,;=:@#fragment", "http://website.com/path/is%2Fslash/!$&'()*+,;=:@/path?query=!$&'()*+,;=:@?query#fragment!$&'()*+,;=:@%23fragment")
     )
     ITERATIONS = 10000
 
