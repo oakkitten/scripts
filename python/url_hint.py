@@ -28,7 +28,7 @@ why yet another url script? well, this is what sets this one apart from others:
     * you can open these with keyboard shortcuts — just one key press to open an url!
     * it can be made to work even when your weechat is on a remote machine through your OS or terminal emulator
     * a ready recipe for opening urls from your PuTTY!
-    
+
 so, this script prepends tiny digits to links, ¹ to the latest url, ² to the second latest, etc
 also it puts these urls in the window title, which you can grab using your OS automation, or your terminal emulator
 this is an example script in AutoHotkey that works with PuTTY (just install ahk, save this to file.ahk and run it):
@@ -56,14 +56,14 @@ executes the result. for example, the following will open url 1 in your default 
 or in elinks a new tmux window
 
     /url_hint /exec -bg tmux new-window elinks {url1}
-    
+
 you can bind opening of url 1 to f1 and url 2 to f2 like this, for example:
 
     (press meta-k, then f1. that prints `meta2-11~`)
     /alias add open_url /url_hint /exec -bg tmux new-window elinks {url$1}
     /key bind meta2-11~ /open_url 1
     /key bind meta2-12~ /open_url 2
-    
+
 WARNING: avoid passing urls to the shell as they aren't properly escaped
 
 settings:
@@ -75,21 +75,23 @@ settings:
     * postfix: the end of the title when there are urls ("")
     * hints: comma-separated list of hints. evaluated, can contain colors ("⁰,¹,²,³,⁴,⁵,⁶,⁷,⁸,⁹")
     * update_title: whether the script should put urls into the title ("on")
-    * safe_urls: whether the script will convert urls to their safe ascii equivalents ("off")
+    * safe_urls: whether the script will convert urls to their safe ascii equivalents. can be either "off",
+      "on" for idna- & percent-encoding, or "base64" for utf-8 base64 encoding ("off")
 
 to avoid auto renaming tmux windows use :set allow-rename off
 in PuTTy
 
 limitations:
- 
+
     * will not work with urls that have color codes inside them
     * will be somewhat useless in merged and zoomed buffers
 
 version history:
 
+    0.5 (22 june 2017): implemented base64 encoding of urls
     0.4 (18 june 2017): encode fewer characters for safe urls—helps with servers that don't follow the rfc
     0.3 (10 june 2017): don't fail when safe url encoding fails
-    0.2 (4 june 2017): don't crash if a new buffer has the same pointer as the old one 
+    0.2 (4 june 2017): don't crash if a new buffer has the same pointer as the old one
     0.1 (30 may 2017): added an option to make safe urls
     0.0 (6 may 2017): initial release
 '''
@@ -98,7 +100,7 @@ import re
 from urllib import quote, unquote
 
 SCRIPT_NAME = "url_hint"
-SCRIPT_VERSION = "0.4"
+SCRIPT_VERSION = "0.5"
 
 # the following code constructs a simple but neat regular expression for detecting urls
 # it's by no means perfect, but it will detect an url in quotes and parentheses, http iris,
@@ -201,32 +203,35 @@ RE_DOTS = re.compile(u"[\u002E\u3002\uFF0E\uFF61]", re.U)
 ###############################################################################
 ###############################################################################
 
+# noinspection PyPep8Naming
+class lazy(object):
+    def __init__(self, fget):
+        self.fget = fget
+
+    def __get__(self, obj, cls):
+        value = self.fget(obj)
+        setattr(obj, self.fget.__name__, value)
+        return value
+
 class Url(object):
     """
     an object that represents an url
-    
+
     exact (str): exact url, may contain non-ascii characters
-    safe (str): safe url with punycode and escaped characters
-    url (str): exact or safe, depending on current settings  
+    safe (str): safe url using punycode and percent-escaped characters
+    base64 (str): safe url, encoded with utf-8 base64
+    url (str): exact or safe or base64, depending on current settings
     """
     def __init__(self, match):
-        self.exact = match.group(0)
         self._match = match
-        self._safe = None
 
-    @property
+    @lazy
+    def exact(self):
+        return self._match.group(0)
+
+    @lazy
     def safe(self):
-        if self._safe is None:
-            self._safe = Url._make_safe_url(self._match)
-        return self._safe
-
-    @property
-    def url(self):
-        return self.safe if C[SAFE] else self.exact
-
-    @staticmethod
-    def _make_safe_url(match):
-        prefix, userinfo, ip_or_host, c_port, rest = match.groups()
+        prefix, userinfo, ip_or_host, c_port, rest = self._match.groups()
         safe = prefix.encode("ascii")
         if userinfo: safe += q(userinfo, safe=SAFE_USERINFO) + "@"
         try: safe += ip_or_host.encode("idna")
@@ -244,7 +249,13 @@ class Url(object):
             safe += end
         return safe
 
-    __slots__ = "exact", "_match", "_safe"
+    @lazy
+    def base64(self):
+        return self.exact.encode("utf-8").encode("base64")
+
+    @property
+    def url(self):
+        return {"off": self.exact, "on": self.safe, "base64": self.base64}[C[SAFE]]
 
 # these are used to encode the url in a safe manner. basically it's url normalization, but it will not fail while
 # encoding invalid urls and it changes as little as possible
@@ -338,7 +349,7 @@ class Buffer(object):
 
     pointer (str): a hex pointer to buffer object in weechat
     urls ([Url]): a list of recent urls, in reverse order
-    
+
     on_message(displayed): *must* be called on every message on a buffer
     valid(): returns True if this buffer still exists in weechat and is safe to operate on
     redraw(full_reset): redraw all lines. if full_reset is True, restores all lines to their original conditions
@@ -458,7 +469,10 @@ def hints_from_string(x):
     return None if len(hints) < 2 or any(not hint.strip() for hint in hints) else hints
 
 def boolean_from_string(x):
-    return x.lower() in ["on", "yes", "true", "y"]
+    return {"on": True, "off": False}.get(x.lower(), None)
+
+def safe_from_string(x):
+    return x.lower() if x.lower() in ("on", "off", "base64") else None
 
 MAX_LINES = "max_lines"
 NO_URLS_TITLE = "no_urls_title"
@@ -477,7 +491,7 @@ DEFAULT_CONFIG = {
     POSTFIX: ("", "the end of the title when there are urls", None),
     HINTS: (u"⁰,¹,²,³,⁴,⁵,⁶,⁷,⁸,⁹", "comma-separated list of hints. evaluated, can contain colors", hints_from_string),
     UPDATE_TITLE: ("on", "whether the script should put urls into the title", boolean_from_string),
-    SAFE: ("off", "whether the script will convert urls to their safe ascii equivalents", boolean_from_string)
+    SAFE: ("off", """whether the script will convert urls to their safe ascii equivalents. can be either "off", "on" for idna- & percent-encoding, or "base64" for utf-8 base64 encoding""", safe_from_string)
 }
 
 C = {}
