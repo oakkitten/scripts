@@ -21,7 +21,7 @@
 # SOFTWARE.
 
 '''
-why yet another url script? well, this is what sets this one apart from others:
+Why yet another url script? Well, this is what sets this one apart from others:
 
     * always visible hints for urls (by default looks like ¹http://this)
     * the hints change as the urls appear. hint ¹ always points to the last url, ² to the second last, etc
@@ -29,9 +29,9 @@ why yet another url script? well, this is what sets this one apart from others:
     * it can be made to work even when your weechat is on a remote machine through your OS or terminal emulator
     * a ready recipe for opening urls from your PuTTY!
 
-so, this script prepends tiny digits to links, ¹ to the latest url, ² to the second latest, etc
-also it puts these urls in the window title, which you can grab using your OS automation, or your terminal emulator
-this is an example script in AutoHotkey that works with PuTTY (just install ahk, save this to file.ahk and run it):
+So, this script prepends tiny digits to links, ¹ to the latest url, ² to the second latest, etc.
+Also, it can put these urls in the window title, which you can grab using your OS automation, or your terminal emulator.
+This is an example script in AutoHotkey that works with PuTTY (just install ahk, save this to file.ahk and run it):
 
     #IfWinActive, ahk_class PuTTY
         F1::
@@ -48,25 +48,26 @@ this is an example script in AutoHotkey that works with PuTTY (just install ahk,
         Return
     #IfWinActive
 
-you can use command /url_hint that replaces {url1}, {url2}, etc with according urls and then
-executes the result. for example, the following will open url 1 in your default browser
+You can use command /url_hint_replace that replaces {url1}, {url2}, etc with according urls and then
+executes the result. For example, the following will open url 1 in your default browser:
 
-    /url_hint /exec -bg xdg-open {url1}
+    /url_hint_replace /exec -bg xdg-open {url1}
 
-or in elinks a new tmux window
+or in elinks a new tmux window:
 
-    /url_hint /exec -bg tmux new-window elinks {url1}
+    /url_hint_replace /exec -bg tmux new-window elinks {url1}
 
-you can bind opening of url 1 to f1 and url 2 to f2 like this, for example:
+You can bind opening of url 1 to f1 and url 2 to f2 like this, for example:
 
     (press meta-k, then f1. that prints `meta2-11~`)
-    /alias add open_url /url_hint /exec -bg tmux new-window elinks {url$1}
+    /alias add open_url /url_hint_replace /exec -bg tmux new-window elinks {url$1}
     /key bind meta2-11~ /open_url 1
     /key bind meta2-12~ /open_url 2
 
-WARNING: avoid passing urls to the shell as they aren't properly escaped
+WARNING: Avoid passing urls to the shell as they can contain special characters. If you must do that, consider setting
+the option safe_urls to "base64".
 
-settings:
+Configuration (plugins.var.python.url_hint.*):
 
     * max_lines: the maximum number of lines that contain urls to track ("10")
     * no_urls_title: title for buffers that don't contain urls ("weechat")
@@ -78,16 +79,20 @@ settings:
     * safe_urls: whether the script will convert urls to their safe ascii equivalents. can be either "off",
       "on" for idna- & percent-encoding, or "base64" for utf-8 base64 encoding ("off")
 
-to avoid auto renaming tmux windows use :set allow-rename off
-in PuTTy
+Notes:
 
-limitations:
+    * to avoid auto renaming tmux windows use :set allow-rename off
+    * in PuTTyTray and possibly other clients, window titles are parsed using wrong charset (see bug #88). The option
+      safe_urls must be set to non-"off" value to avoid issues
+
+Limitations:
 
     * will not work with urls that have color codes inside them
     * will be somewhat useless in merged and zoomed buffers
 
-version history:
+Version history:
 
+    0.6 (26 june 2017): renamed /url_hint to /url_hint_replace; /url_hint simply prints help now
     0.5 (22 june 2017): implemented base64 encoding of urls
     0.4 (18 june 2017): encode fewer characters for safe urls—helps with servers that don't follow the rfc
     0.3 (10 june 2017): don't fail when safe url encoding fails
@@ -100,7 +105,7 @@ import re
 from urllib import quote, unquote
 
 SCRIPT_NAME = "url_hint"
-SCRIPT_VERSION = "0.5"
+SCRIPT_VERSION = "0.6"
 
 # the following code constructs a simple but neat regular expression for detecting urls
 # it's by no means perfect, but it will detect an url in quotes and parentheses, http iris,
@@ -438,8 +443,14 @@ def update_title():
 
 RE_REP = re.compile(r"{url(\d+)}", re.I)
 
+# simply print help
 # noinspection PyUnusedLocal
 def url_hint(data, pointer, command):
+    weechat.prnt("", __doc__.strip())
+    return weechat.WEECHAT_RC_OK
+
+# noinspection PyUnusedLocal
+def url_hint_replace(data, pointer, command):
     urls = buffers[pointer].urls
     def get_url(match):
         try: return urls[int(match.group(1)) - 1].url
@@ -598,20 +609,23 @@ else:
     weechat.hook_signal("buffer_switch", "on_buffer_switch", "")
     weechat.hook_config("plugins.var.python." + SCRIPT_NAME + ".*", "load_config", "")
 
-    if not weechat.hook_command(SCRIPT_NAME, """Replaces {url1} with url hinted with a 1, etc. Example usage:
+    if not weechat.hook_command("url_hint", __doc__.strip(), "", "", "", "url_hint", ""):
+        print_error("could not hook command /url_hint")
+
+    if not weechat.hook_command("url_hint_replace", """Replaces {url1} with url hinted with a 1, etc. Example usage:
     
 Open url 1 in your default browser:
 
-  /url_hint /exec -bg xdg-open {url1}
+  /url_hint_replace /exec -bg xdg-open {url1}
 
 Open url 1 in elinks in a new tmux window:
 
-  /url_hint /exec -bg tmux new-window elinks {url1}
+  /url_hint_replace /exec -bg tmux new-window elinks {url1}
     
 Bind opening of url 1 to F1 and url 2 to F2:
 
   (press meta-k, then f1. that prints "meta2-11~")
-  /alias add open_url /url_hint /exec -bg tmux new-window elinks {url$1}
+  /alias add open_url /url_hint_replace /exec -bg tmux new-window elinks {url$1}
   /key bind meta2-11~ /open_url 1
-  /key bind meta2-12~ /open_url 2""", "<command>", "", "", "url_hint", ""):
-        print_error("could not hook command /" + SCRIPT_NAME)
+  /key bind meta2-12~ /open_url 2""", "<command>", "", "", "url_hint_replace", ""):
+        print_error("could not hook command /url_hint_replace")
