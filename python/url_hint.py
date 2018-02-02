@@ -260,7 +260,7 @@ class Url(object):
 
     @property
     def url(self):
-        return {"off": self.exact, "on": self.safe, "base64": self.base64}[C[SAFE]]
+        return getattr(self, C[SAFE])
 
 # these are used to encode the url in a safe manner. basically it's url normalization, but it will not fail while
 # encoding invalid urls and it changes as little as possible
@@ -483,7 +483,7 @@ def boolean_from_string(x):
     return {"on": True, "off": False}.get(x.lower(), None)
 
 def safe_from_string(x):
-    return x.lower() if x.lower() in ("on", "off", "base64") else None
+    return {"off": "exact", "on": "safe", "base64": "base64"}[x.lower()] if x.lower() in ("on", "off", "base64") else None
 
 MAX_LINES = "max_lines"
 NO_URLS_TITLE = "no_urls_title"
@@ -595,7 +595,7 @@ else:
 
     WEECHAT_VERSION = int(weechat.info_get('version_number', '') or 0)
     if WEECHAT_VERSION <= 0x00040000:
-        raise Exception("Need Weechat 4.0 or higher")
+        raise Exception("Need Weechat 0.4 or higher")
 
     H_BUFFER = weechat.hdata_get("buffer")
     H_LINES = weechat.hdata_get("lines")
