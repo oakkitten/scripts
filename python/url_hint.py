@@ -590,7 +590,7 @@ except ImportError:
     print "%s lookups on a %s character long string with %s urls took %s seconds (%s seconds per iteration)" % \
           (ITERATIONS, len(string), len(urls), time, time/ITERATIONS)
 else:
-    if not weechat.register(SCRIPT_NAME, "squirrel", SCRIPT_VERSION, "MIT", "Display hints for urls and open them with keyboard shortcuts", "exit_function", ""):
+    if not weechat.register(SCRIPT_NAME, "oakkitten", SCRIPT_VERSION, "MIT", "Display hints for urls and open them with keyboard shortcuts", "exit_function", ""):
         raise Exception("Could not register script")
 
     WEECHAT_VERSION = int(weechat.info_get('version_number', '') or 0)
