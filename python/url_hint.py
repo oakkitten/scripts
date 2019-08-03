@@ -92,6 +92,7 @@ Limitations:
 
 Version history:
 
+    0.7 (4 may 2019): py3 compatibility
     0.6 (26 june 2017): renamed /url_hint to /url_hint_replace; /url_hint simply prints help now
     0.5 (22 june 2017): implemented base64 encoding of urls
     0.4 (18 june 2017): encode fewer characters for safe urls—helps with servers that don't follow the rfc
@@ -101,8 +102,18 @@ Version history:
     0.0 (6 may 2017): initial release
 '''
 
+from __future__ import unicode_literals
 import re
-from urllib import quote, unquote
+import sys
+PY3 = sys.version_info[0] >= 3
+if PY3:
+    # noinspection PyUnresolvedReferences,PyCompatibility
+    from urllib.parse import quote_from_bytes, unquote_to_bytes
+else:
+    # noinspection PyUnresolvedReferences
+    from urllib import quote as quote_from_bytes
+    # noinspection PyUnresolvedReferences
+    from urllib import unquote as unquote_to_bytes
 
 SCRIPT_NAME = "url_hint"
 SCRIPT_VERSION = "0.6"
@@ -124,21 +135,21 @@ SCRIPT_VERSION = "0.6"
 # 80-9f     c1 control chars
 # a0        nbsp
 
-RE_IPV4_SEGMENT = ur"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
-RE_IPV6_SEGMENT = ur"[0-9A-Fa-f]{1,4}"
+RE_IPV4_SEGMENT = r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
+RE_IPV6_SEGMENT = r"[0-9A-Fa-f]{1,4}"
 
-RE_GOOD_ASCII_CHAR = ur"[A-Za-z0-9]"
-RE_BAD_CHAR = ur"\x00-\x20\x7f-\xa0\ufff0-\uffff\s"
-RE_GOOD_CHAR = ur"[^{bad}]".format(bad=RE_BAD_CHAR)
-RE_GOOD_HOST_CHAR = ur"[^\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\xa0\ufff0-\uffff]"
-RE_GOOD_TLD_CHAR = ur"[^\x00-\x40\x5b-\x60\x7b-\xa0\ufff0-\uffff]"
+RE_GOOD_ASCII_CHAR = r"[A-Za-z0-9]"
+RE_BAD_CHAR = r"\x00-\x20\x7f-\xa0\ufff0-\uffff\s"
+RE_GOOD_CHAR = r"[^{bad}]".format(bad=RE_BAD_CHAR)
+RE_GOOD_HOST_CHAR = r"[^\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\xa0\ufff0-\uffff]"
+RE_GOOD_TLD_CHAR = r"[^\x00-\x40\x5b-\x60\x7b-\xa0\ufff0-\uffff]"
 
-RE_HOST_SEGMENT = ur"""(?:xn--(?:{good_ascii}+-)*{good_ascii}+|(?:{good_host}+-)*{good_host}+)""" \
+RE_HOST_SEGMENT = r"""(?:xn--(?:{good_ascii}+-)*{good_ascii}+|(?:{good_host}+-)*{good_host}+)""" \
     .format(good_ascii=RE_GOOD_ASCII_CHAR, good_host=RE_GOOD_HOST_CHAR)
-RE_TLD = ur"(?:xn--{good_ascii}+|{good_tld}{{2,}})".format(good_ascii=RE_GOOD_ASCII_CHAR, good_tld=RE_GOOD_TLD_CHAR)
+RE_TLD = r"(?:xn--{good_ascii}+|{good_tld}{{2,}})".format(good_ascii=RE_GOOD_ASCII_CHAR, good_tld=RE_GOOD_TLD_CHAR)
 
 # language=PythonVerboseRegExp
-RE_URL = ur"""
+RE_URL = r"""
     # url must be preceded by a word boundary, or a weechat color (a control character followed by a digit)
     (?:(?<=\d)|\b)
 
@@ -202,7 +213,7 @@ RE_URL = ur"""
 RE_URL = RE_URL.format(s4=RE_IPV4_SEGMENT, s6=RE_IPV6_SEGMENT,
                        bad=RE_BAD_CHAR, good=RE_GOOD_CHAR, host_segment=RE_HOST_SEGMENT, tld=RE_TLD)
 RE_URL = re.compile(RE_URL, re.U | re.X | re.I)
-RE_DOTS = re.compile(u"[\u002E\u3002\uFF0E\uFF61]", re.U)
+RE_DOTS = re.compile("[\u002E\u3002\uFF0E\uFF61]", re.U)
 
 ###############################################################################
 ###############################################################################
@@ -238,19 +249,19 @@ class Url(object):
     def safe(self):
         prefix, userinfo, ip_or_host, c_port, rest = self._match.groups()
         safe = prefix.encode("ascii")
-        if userinfo: safe += q(userinfo, safe=SAFE_USERINFO) + "@"
+        if userinfo: safe += q(userinfo, safe=SAFE_USERINFO) + b"@"
         try: safe += ip_or_host.encode("idna")
         except UnicodeError: safe += ".".join(safe_label(label) for label in RE_DOTS.split(ip_or_host))
         if c_port: safe += c_port.encode("ascii")
         if rest:
-            end = ""
+            end = b""
             if "#" in rest:
                 rest, fragment = rest.split("#", 1)
-                end = "#" + q(fragment, safe=SAFE_FRAGMENT)
+                end = b"#" + q(fragment, safe=SAFE_FRAGMENT)
             if "?" in rest:
                 rest, query = rest.split("?", 1)
-                end = "?" + q(query, safe=SAFE_QUERY) + end
-            safe += "/".join(q(segment, safe=SAFE_PATH) for segment in rest.split("/"))
+                end = b"?" + q(query, safe=SAFE_QUERY) + end
+            safe += b"/".join(q(segment, safe=SAFE_PATH) for segment in rest.split("/"))
             safe += end
         return safe
 
@@ -275,13 +286,14 @@ class Url(object):
 #     fragment      = *( pchar / "/" / "?" )
 # quote() takes the rest of unreserved characters by itself, so we only need to adjust it for the rest
 
-SUB_DELIMS = "!$&'()*+,;="
-SAFE_USERINFO = SUB_DELIMS + ":"
-SAFE_PATH = SUB_DELIMS + ":@"
-SAFE_FRAGMENT = SAFE_QUERY = SUB_DELIMS + ":@" + "/?"
+SUB_DELIMS = b"!$&'()*+,;="
+SAFE_USERINFO = SUB_DELIMS + b":"
+SAFE_PATH = SUB_DELIMS + b":@"
+SAFE_FRAGMENT = SAFE_QUERY = SUB_DELIMS + b":@" + b"/?"
 
 def q(uni, safe):
-    return quote(unquote(uni.encode("utf-8")), safe=safe)
+    out = quote_from_bytes(unquote_to_bytes(uni.encode("utf-8")), safe=safe)
+    return out.encode("utf-8") if PY3 else out
 
 SAFE_HOST_LETTERS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz.1234567890")
 def safe_label(label):
@@ -319,7 +331,7 @@ class Line(object):
         self._original_message = message
         self._current_message = message
         self._parts = [part.exact if isinstance(part, Url) else part for part in parts]
-        for i in range(1, len(self._parts) * 3 / 2, 3):
+        for i in range(1, len(self._parts) * 3 // 2, 3):
             self._parts.insert(i, None)
 
     def is_of_pointer(self, pointer):
@@ -327,7 +339,7 @@ class Line(object):
                self._current_message == weechat.hdata_string(H_LINE_DATA, self._data, 'message').decode("utf-8")
 
     def redraw(self, index):
-        self._parts[1::3] = (get_hint(i) for i in reversed(xrange(index, index + len(self.urls))))
+        self._parts[1::3] = (get_hint(i) for i in reversed(range(index, index + len(self.urls))))
         self._set_message("".join(self._parts))
 
     def reset(self):
@@ -416,7 +428,10 @@ def line_reverse_walker(pointer):
 ###############################################################################
 ###############################################################################
 
-buffers = type("", (dict,), {"__missing__": lambda self, p: self.setdefault(p, Buffer(p))})()
+class Buffers(dict):
+    def __missing__(self, key):
+        return self.setdefault(key, Buffer(key))
+buffers = Buffers()
 current_buffer = ""
 
 # noinspection PyUnusedLocal
@@ -446,7 +461,7 @@ RE_REP = re.compile(r"{url(\d+)}", re.I)
 # simply print help
 # noinspection PyUnusedLocal
 def url_hint(data, pointer, command):
-    weechat.prnt("", __doc__.strip())
+    weechat.prnt("", __doc__.strip().encode("utf-8"))
     return weechat.WEECHAT_RC_OK
 
 # noinspection PyUnusedLocal
@@ -456,14 +471,15 @@ def url_hint_replace(data, pointer, command):
         try: return urls[int(match.group(1)) - 1].url
         except IndexError: raise IndexError("could not replace " + match.group(0))
     try: weechat.command(pointer, RE_REP.sub(get_url, command.decode("utf-8")).encode("utf-8"))
-    except IndexError as e: print_error(e.message)
+    except IndexError as e: print_error(str(e))
     return weechat.WEECHAT_RC_OK
 
 def print_error(text):
-    weechat.prnt("", "%s%s: %s" % (weechat.prefix("error"), SCRIPT_NAME, text))
+    weechat.prnt("", "%s%s: %s" % (weechat.prefix("error"), SCRIPT_NAME, text.encode("utf-8")))
 
+# noinspection PyShadowingBuiltins
 def redraw_everything(full_reset):
-    for pointer, buffer in buffers.items():
+    for pointer, buffer in list(buffers.items()):
         buffer.redraw(full_reset=full_reset)
     update_title()
     return weechat.WEECHAT_RC_OK
@@ -500,7 +516,7 @@ DEFAULT_CONFIG = {
     PREFIX: ("urls: ", "the beginning of the title when there are urls", None),
     DELIMITER: (" ", "what goes between the urls in the title", None),
     POSTFIX: ("", "the end of the title when there are urls", None),
-    HINTS: (u"⁰,¹,²,³,⁴,⁵,⁶,⁷,⁸,⁹", "comma-separated list of hints. evaluated, can contain colors", hints_from_string),
+    HINTS: ("⁰,¹,²,³,⁴,⁵,⁶,⁷,⁸,⁹", "comma-separated list of hints. evaluated, can contain colors", hints_from_string),
     UPDATE_TITLE: ("on", "whether the script should put urls into the title", boolean_from_string),
     SAFE: ("off", """whether the script will convert urls to their safe ascii equivalents. can be either "off", "on" for idna- & percent-encoding, or "base64" for utf-8 base64 encoding""", safe_from_string)
 }
@@ -508,7 +524,7 @@ DEFAULT_CONFIG = {
 C = {}
 
 def load_config(*_):
-    for name, (default, description, from_string) in DEFAULT_CONFIG.iteritems():
+    for name, (default, description, from_string) in DEFAULT_CONFIG.items():
         value = None
         if weechat.config_is_set_plugin(name):
             value = weechat.config_get_plugin(name).decode("utf-8")
@@ -525,72 +541,72 @@ def load_config(*_):
 ###############################################################################
 ###############################################################################
 
-try:
-    # noinspection PyUnresolvedReferences
-    import weechat
-except ImportError:
+def run_tests():
     # noinspection SpellCheckingInspection
-    TESTS = (
-        u"foo",
-        u"http://",
-        u"http://#",
-        u"http:// fail.com",
-        u"http://xm--we.co",
-        u"http://.www..foo.bar/",
-        u"http://url.c",
-        u"http://url.co1/,",
-        u"http://2.2.2.256/foo ",
-        u"http://[3210:123z::]:80/bye#",
-        u"www.mail-.lv",
-        u"http://squirrel",                                                 # this is valid but we don't want it anyway,
-        u"wut://server.com",
-        u"http://ser$ver.com",
-        u"http://ser_ver.com",
+    tests = (
+        "foo",
+        "http://",
+        "http://#",
+        "http:// fail.com",
+        "http://xm--we.co",
+        "http://.www..foo.bar/",
+        "http://url.c",
+        "http://url.co1/,",
+        "http://2.2.2.256/foo ",
+        "http://[3210:123z::]:80/bye#",
+        "www.mail-.lv",
+        "http://squirrel",                                                 # this is valid but we don't want it anyway,
+        "wut://server.com",
+        "http://ser$ver.com",
+        "http://ser_ver.com",
 
-        (u"http://url.co\u00a0m/,", u"http://url.co", "http://url.co"),     # non-breaking space
-        (u"[http://[3ffe:2a00:100:7031::1]", u"http://[3ffe:2a00:100:7031::1]", "http://[3ffe:2a00:100:7031::1]"),
-        (u"http://[1080::8:800:200C:417A]/foo)", u"http://[1080::8:800:200C:417A]/foo", "http://[1080::8:800:200C:417A]/foo"),
-        (u"http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80/index.html", u"http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80/index.html", "http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80/index.html"),
-        (u"http://[::3210]:80/hi", u"http://[::3210]:80/hi", "http://[::3210]:80/hi"),
-        (u"http://[3210:123::]:80/bye#", u"http://[3210:123::]:80/bye#", "http://[3210:123::]:80/bye#"),
-        (u"http://127.0.0.1/foo ", u"http://127.0.0.1/foo", "http://127.0.0.1/foo"),
-        (u"www.ma-il.lv/$_", u"www.ma-il.lv/$_", "www.ma-il.lv/$_"),
-        (u"http://url.com", u"http://url.com", "http://url.com"),
-        (u"(http://url.com)", u"http://url.com", "http://url.com"),
-        (u"0HTTP://ПРЕЗИДЕНТ.РФ'", u"HTTP://ПРЕЗИДЕНТ.РФ", "HTTP://xn--d1abbgf6aiiy.xn--p1ai"),
-        (u"http://xn-d1abbgf6aiiy.xnpai/,", u"http://xn-d1abbgf6aiiy.xnpai/", "http://xn-d1abbgf6aiiy.xnpai/"),
-        (u"http://xn--d1abbgf6aiiy.xn--p1ai/,", u"http://xn--d1abbgf6aiiy.xn--p1ai/", "http://xn--d1abbgf6aiiy.xn--p1ai/"),
-        (u"  https://en.wikipedia.org/wiki/Bap_(food)\x01", u"https://en.wikipedia.org/wiki/Bap_(food)", "https://en.wikipedia.org/wiki/Bap_(food)"),
-        (u"\x03www.猫.jp", u"www.猫.jp", "www.xn--z7x.jp"),
-        (u'"https://en.wikipedia.org/wiki/Bap_(food)"', u"https://en.wikipedia.org/wiki/Bap_(food)", "https://en.wikipedia.org/wiki/Bap_(food)"),
-        (u"(https://ru.wikipedia.org/wiki/Мыло_(значения))", u"https://ru.wikipedia.org/wiki/Мыло_(значения)", "https://ru.wikipedia.org/wiki/%D0%9C%D1%8B%D0%BB%D0%BE_(%D0%B7%D0%BD%D0%B0%D1%87%D0%B5%D0%BD%D0%B8%D1%8F)"),
-        (u"http://foo.com/blah_blah_(wikipedia)_(again))", u"http://foo.com/blah_blah_(wikipedia)_(again)", "http://foo.com/blah_blah_(wikipedia)_(again)"),
-        (u"http://➡.ws/䨹", u"http://➡.ws/䨹", "http://xn--hgi.ws/%E4%A8%B9"),
-        (u" http://server.com/www.server.com ", u"http://server.com/www.server.com", "http://server.com/www.server.com"),
-        (u"http://➡.ws/♥?♥#♥'", u"http://➡.ws/♥?♥#♥", "http://xn--hgi.ws/%E2%99%A5?%E2%99%A5#%E2%99%A5"),
-        (u"http://➡.ws/♥/pa%2Fth;par%2Fams?que%2Fry=a&b=c", u"http://➡.ws/♥/pa%2Fth;par%2Fams?que%2Fry=a&b=c", "http://xn--hgi.ws/%E2%99%A5/pa%2Fth;par%2Fams?que/ry=a&b=c"),
-        (u"http://badutf8pcokay.com/%FF?%FE#%FF", u"http://badutf8pcokay.com/%FF?%FE#%FF", "http://badutf8pcokay.com/%FF?%FE#%FF"),
-        (u"http://website.com/path/is%2fslash/!$&'()*+,;=:@/path?query=!$&'()*+,;=:@?query#fragment!$&'()*+,;=:@#fragment", u"http://website.com/path/is%2fslash/!$&'()*+,;=:@/path?query=!$&'()*+,;=:@?query#fragment!$&'()*+,;=:@#fragment", "http://website.com/path/is%2Fslash/!$&'()*+,;=:@/path?query=!$&'()*+,;=:@?query#fragment!$&'()*+,;=:@%23fragment")
+        ("http://url.co\u00a0m/,", "http://url.co", b"http://url.co"),     # non-breaking space
+        ("[http://[3ffe:2a00:100:7031::1]", "http://[3ffe:2a00:100:7031::1]", b"http://[3ffe:2a00:100:7031::1]"),
+        ("http://[1080::8:800:200C:417A]/foo)", "http://[1080::8:800:200C:417A]/foo", b"http://[1080::8:800:200C:417A]/foo"),
+        ("http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80/index.html", "http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80/index.html", b"http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80/index.html"),
+        ("http://[::3210]:80/hi", "http://[::3210]:80/hi", b"http://[::3210]:80/hi"),
+        ("http://[3210:123::]:80/bye#", "http://[3210:123::]:80/bye#", b"http://[3210:123::]:80/bye#"),
+        ("http://127.0.0.1/foo ", "http://127.0.0.1/foo", b"http://127.0.0.1/foo"),
+        ("www.ma-il.lv/$_", "www.ma-il.lv/$_", b"www.ma-il.lv/$_"),
+        ("http://url.com", "http://url.com", b"http://url.com"),
+        ("(http://url.com)", "http://url.com", b"http://url.com"),
+        ("0HTTP://ПРЕЗИДЕНТ.РФ'", "HTTP://ПРЕЗИДЕНТ.РФ", b"HTTP://xn--d1abbgf6aiiy.xn--p1ai"),
+        ("http://xn-d1abbgf6aiiy.xnpai/,", "http://xn-d1abbgf6aiiy.xnpai/", b"http://xn-d1abbgf6aiiy.xnpai/"),
+        ("http://xn--d1abbgf6aiiy.xn--p1ai/,", "http://xn--d1abbgf6aiiy.xn--p1ai/", b"http://xn--d1abbgf6aiiy.xn--p1ai/"),
+        ("  https://en.wikipedia.org/wiki/Bap_(food)\x01", "https://en.wikipedia.org/wiki/Bap_(food)", b"https://en.wikipedia.org/wiki/Bap_(food)"),
+        ("\x03www.猫.jp", "www.猫.jp", b"www.xn--z7x.jp"),
+        ('"https://en.wikipedia.org/wiki/Bap_(food)"', "https://en.wikipedia.org/wiki/Bap_(food)", b"https://en.wikipedia.org/wiki/Bap_(food)"),
+        ("(https://ru.wikipedia.org/wiki/Мыло_(значения))", "https://ru.wikipedia.org/wiki/Мыло_(значения)", b"https://ru.wikipedia.org/wiki/%D0%9C%D1%8B%D0%BB%D0%BE_(%D0%B7%D0%BD%D0%B0%D1%87%D0%B5%D0%BD%D0%B8%D1%8F)"),
+        ("http://foo.com/blah_blah_(wikipedia)_(again))", "http://foo.com/blah_blah_(wikipedia)_(again)", b"http://foo.com/blah_blah_(wikipedia)_(again)"),
+        ("http://➡.ws/䨹", "http://➡.ws/䨹", b"http://xn--hgi.ws/%E4%A8%B9"),
+        (" http://server.com/www.server.com ", "http://server.com/www.server.com", b"http://server.com/www.server.com"),
+        ("http://➡.ws/♥?♥#♥'", "http://➡.ws/♥?♥#♥", b"http://xn--hgi.ws/%E2%99%A5?%E2%99%A5#%E2%99%A5"),
+        ("http://➡.ws/♥/pa%2Fth;par%2Fams?que%2Fry=a&b=c", "http://➡.ws/♥/pa%2Fth;par%2Fams?que%2Fry=a&b=c", b"http://xn--hgi.ws/%E2%99%A5/pa%2Fth;par%2Fams?que/ry=a&b=c"),
+        ("http://badutf8pcokay.com/%FF?%FE#%FF", "http://badutf8pcokay.com/%FF?%FE#%FF", b"http://badutf8pcokay.com/%FF?%FE#%FF"),
+        ("http://website.com/path/is%2fslash/!$&'()*+,;=:@/path?query=!$&'()*+,;=:@?query#fragment!$&'()*+,;=:@#fragment", "http://website.com/path/is%2fslash/!$&'()*+,;=:@/path?query=!$&'()*+,;=:@?query#fragment!$&'()*+,;=:@#fragment", b"http://website.com/path/is%2Fslash/!$&'()*+,;=:@/path?query=!$&'()*+,;=:@?query#fragment!$&'()*+,;=:@%23fragment")
     )
-    ITERATIONS = 10000
+    iterations = 10000
 
-    print "testing the urls…\n"
-    for test in TESTS:
+    print("testing the urls…\n")
+    for test in tests:
         string, exact, safe = test if isinstance(test, tuple) else (test, None, None)
         result = list(find_urls(string))
         e, s = (result[1].exact, result[1].safe) if len(result) == 3 else (None, None)
-        if e == exact and s == safe: print u"OK `%s`: `%s`; `%s`" % (string, exact, safe)
-        else: print u"FAIL `%s`: `%s` → `%s`; `%s` → `%s`" % (string, exact, e, safe, s)
+        if e == exact and s == safe: print("OK `%s`: `%s`; `%s`" % (string, exact, safe))
+        else: print("FAIL `%s`: `%s` → `%s`; `%s` → `%s`" % (string, exact, e, safe, s))
 
-    print "\ntesting speed…\n"
+    print("\ntesting speed…\n")
     from timeit import Timer
-    urls = [test[0] for test in TESTS if isinstance(test, tuple)]
+    urls = [test[0] for test in tests if isinstance(test, tuple)]
     string = " lorem ipsum dolor sit amet ".join(urls)
-    time = Timer("list(find_urls(string))", "import re; from __main__ import find_urls, string").timeit(ITERATIONS)
-    print "%s lookups on a %s character long string with %s urls took %s seconds (%s seconds per iteration)" % \
-          (ITERATIONS, len(string), len(urls), time, time/ITERATIONS)
-else:
-    if not weechat.register(SCRIPT_NAME, "oakkitten", SCRIPT_VERSION, "MIT", "Display hints for urls and open them with keyboard shortcuts", "exit_function", ""):
+    time = Timer("list(find_urls(text))", "from __main__ import find_urls; text = '''" + string + "''' ").timeit(iterations)
+    print("%s lookups on a %s character long string with %s urls took %s seconds (%s seconds per iteration)" %
+          (iterations, len(string), len(urls), time, time / iterations))
+
+def install():
+    global WEECHAT_VERSION, H_BUFFER, H_LINES, H_LINE, H_LINE_DATA, HL_GUI_BUFFERS
+    if not weechat.register(SCRIPT_NAME, "oakkitten", SCRIPT_VERSION, "MIT",
+                            "Display hints for urls and open them with keyboard shortcuts", "exit_function", ""):
         raise Exception("Could not register script")
 
     WEECHAT_VERSION = int(weechat.info_get('version_number', '') or 0)
@@ -609,23 +625,31 @@ else:
     weechat.hook_signal("buffer_switch", "on_buffer_switch", "")
     weechat.hook_config("plugins.var.python." + SCRIPT_NAME + ".*", "load_config", "")
 
-    if not weechat.hook_command("url_hint", __doc__.strip(), "", "", "", "url_hint", ""):
+    if not weechat.hook_command("url_hint", __doc__.strip().encode("utf-8"), "", "", "", "url_hint", ""):
         print_error("could not hook command /url_hint")
 
     if not weechat.hook_command("url_hint_replace", """Replaces {url1} with url hinted with a 1, etc. Example usage:
 
-Open url 1 in your default browser:
+    Open url 1 in your default browser:
 
-  /url_hint_replace /exec -bg xdg-open {url1}
+      /url_hint_replace /exec -bg xdg-open {url1}
 
-Open url 1 in elinks in a new tmux window:
+    Open url 1 in elinks in a new tmux window:
 
-  /url_hint_replace /exec -bg tmux new-window elinks {url1}
+      /url_hint_replace /exec -bg tmux new-window elinks {url1}
 
-Bind opening of url 1 to F1 and url 2 to F2:
+    Bind opening of url 1 to F1 and url 2 to F2:
 
-  (press meta-k, then f1. that prints "meta2-11~")
-  /alias add open_url /url_hint_replace /exec -bg tmux new-window elinks {url$1}
-  /key bind meta2-11~ /open_url 1
-  /key bind meta2-12~ /open_url 2""", "<command>", "", "", "url_hint_replace", ""):
+      (press meta-k, then f1. that prints "meta2-11~")
+      /alias add open_url /url_hint_replace /exec -bg tmux new-window elinks {url$1}
+      /key bind meta2-11~ /open_url 1
+      /key bind meta2-12~ /open_url 2""", "<command>", "", "", "url_hint_replace", ""):
         print_error("could not hook command /url_hint_replace")
+
+try:
+    # noinspection PyUnresolvedReferences
+    import weechat
+except ImportError:
+    run_tests()
+else:
+    install()
