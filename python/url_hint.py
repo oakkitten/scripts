@@ -92,6 +92,7 @@ Limitations:
 
 Version history:
 
+    0.8 (21 august 2019): added more tests and
     0.7 (4 august 2019): py3 compatibility
     0.6 (26 june 2017): renamed /url_hint to /url_hint_replace; /url_hint simply prints help now
     0.5 (22 june 2017): implemented base64 encoding of urls
@@ -107,8 +108,9 @@ import re
 import sys
 from base64 import b64encode
 
+# noinspection PyUnreachableCode
 if False:
-    # noinspection PyUnreachableCode
+    # noinspection PyUnresolvedReferences
     from typing import cast, Match, Pattern, Generator, List, Union, Optional, Any, Callable, Dict, Tuple
 
 PY3 = sys.version_info[0] >= 3
@@ -124,7 +126,7 @@ else:
     str = unicode
 
 SCRIPT_NAME = "url_hint"
-SCRIPT_VERSION = "0.7"
+SCRIPT_VERSION = "0.8"
 
 # the following code constructs a simple but neat regular expression for detecting urls
 # it's by no means perfect, but it will detect an url in quotes and parentheses, http iris,
@@ -249,15 +251,15 @@ class Url(object):
     base64 (str): safe url, encoded with utf-8 base64
     url (str): exact or safe or base64, depending on current settings
     """
-    def __init__(self, match):  # type: (Match) -> None
+    def __init__(self, match):                      # type: (Match) -> None
         self._match = match
 
     @lazy
-    def exact(self):            # type: () -> str
+    def exact(self):                                # type: () -> str
         return self._match.group(0)
 
     @lazy
-    def safe(self):             # type: () -> str
+    def safe(self):                                 # type: () -> str
         prefix, userinfo, ip_or_host, c_port, rest = self._match.groups()
         safe = prefix.encode("ascii")
         if userinfo: safe += q(userinfo, safe=SAFE_USERINFO) + b"@"
@@ -276,11 +278,11 @@ class Url(object):
         return safe.decode("ascii")   # todo simplify?
 
     @lazy
-    def base64(self):           # type: () -> str
+    def base64(self):                               # type: () -> str
         return b64encode(self.exact.encode("utf-8")).decode("utf-8")
 
     @property
-    def url(self):              # type: () -> str
+    def url(self):                                  # type: () -> str
         return getattr(self, C[SAFE])
 
 # these are used to encode the url in a safe manner. basically it's url normalization, but it will not fail while
@@ -301,15 +303,15 @@ SAFE_USERINFO = SUB_DELIMS + b":"
 SAFE_PATH = SUB_DELIMS + b":@"
 SAFE_FRAGMENT = SAFE_QUERY = SUB_DELIMS + b":@" + b"/?"
 
-def q(uni, safe):               # type: (str, bytes) -> bytes
+def q(uni, safe):                                   # type: (str, bytes) -> bytes
     out = quote_from_bytes(unquote_to_bytes(uni.encode("utf-8")), safe=safe)    # type: Any
     return out.encode("utf-8") if PY3 else out
 
 SAFE_HOST_LETTERS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz.1234567890")
-def safe_label(label):          # type: (str) -> bytes
+def safe_label(label):                              # type: (str) -> bytes
     return label.encode("utf-8") if set(label).issubset(SAFE_HOST_LETTERS) else b"xn--" + label.lower().encode("punycode")
 
-def find_urls(string):          # type: (str) -> Generator[Union[str, Url], None, None]
+def find_urls(string):                              # type: (str) -> Generator[Union[str, Url], None, None]
     last_end = 0
     for match in RE_URL.finditer(string):
         if not is_valid_url(match):
@@ -322,11 +324,11 @@ def find_urls(string):          # type: (str) -> Generator[Union[str, Url], None
 
 # domain name (a.b.c.d.) can be a maximum of 253 characters, not counting the FQDN dot;
 # each label (a, b, ...) can be a maximum of 63 characters long
-def is_valid_url(match):        # type: (Match) -> bool
+def is_valid_url(match):                            # type: (Match) -> bool
     domain_name = match.group(3).rstrip(".")
     try:
         domain_name.encode("idna")
-    except UnicodeError:        # fired if label length is wrong
+    except UnicodeError:                            # fired if label length is wrong
         return False
     if len(domain_name) > 253:
         return False
@@ -685,7 +687,7 @@ def run_tests():
             string, exact, safe = test
         result = list(find_urls(string))
         e, s = (result[1].exact, result[1].safe) if len(result) == 3 else (None, None)
-        if e != exact and s != safe:
+        if e != exact or s != safe:
             print("FAIL %s: %s → %s; %s → %s" % (string, exact, e, safe, s))
             errors = True
     print("ERRORS FOUND" if errors else "no errors found")
@@ -699,7 +701,7 @@ def run_tests():
                              setup="from %s import find_urls; text = u'''%s''' " % (__name__, string),
                              repeat=repeat,
                              number=iterations))
-    print("%s loops, best of %s: %sms per loop (%s urls in %s characters)" %
+    print("%d loops, best of %d: %.5fms per loop (%d urls in %d characters)" %
           (iterations, repeat, time / iterations * 1000, len(urls), len(string)))
 
 try:
