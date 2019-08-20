@@ -111,7 +111,7 @@ from base64 import b64encode
 # noinspection PyUnreachableCode
 if False:
     # noinspection PyUnresolvedReferences
-    from typing import cast, Match, Pattern, Generator, List, Union, Optional, Any, Callable, Dict, Tuple
+    from typing import Match, Pattern, Generator, List, Union, Optional, Any, Callable, Dict, Tuple
 
 PY3 = sys.version_info[0] >= 3
 if PY3:
@@ -261,21 +261,21 @@ class Url(object):
     @lazy
     def safe(self):                                 # type: () -> str
         prefix, userinfo, ip_or_host, c_port, rest = self._match.groups()
-        safe = prefix.encode("ascii")
-        if userinfo: safe += q(userinfo, safe=SAFE_USERINFO) + b"@"
-        safe += ip_or_host.encode("idna")
-        if c_port: safe += c_port.encode("ascii")
+        safe = prefix
+        if userinfo: safe += q(userinfo, safe=SAFE_USERINFO) + "@"
+        safe += ip_or_host.encode("idna").decode("utf-8")
+        if c_port: safe += c_port
         if rest:
-            end = b""
+            end = ""
             if "#" in rest:
                 rest, fragment = rest.split("#", 1)
-                end = b"#" + q(fragment, safe=SAFE_FRAGMENT)
+                end = "#" + q(fragment, safe=SAFE_FRAGMENT)
             if "?" in rest:
                 rest, query = rest.split("?", 1)
-                end = b"?" + q(query, safe=SAFE_QUERY) + end
-            safe += b"/".join(q(segment, safe=SAFE_PATH) for segment in rest.split("/"))
+                end = "?" + q(query, safe=SAFE_QUERY) + end
+            safe += "/".join(q(segment, safe=SAFE_PATH) for segment in rest.split("/"))
             safe += end
-        return safe.decode("ascii")   # todo simplify?
+        return safe
 
     @lazy
     def base64(self):                               # type: () -> str
@@ -303,13 +303,12 @@ SAFE_USERINFO = SUB_DELIMS + b":"
 SAFE_PATH = SUB_DELIMS + b":@"
 SAFE_FRAGMENT = SAFE_QUERY = SUB_DELIMS + b":@" + b"/?"
 
-def q(uni, safe):                                   # type: (str, bytes) -> bytes
+# this uses bytes as urls do not necessarily contain unicode in them. for instance,
+# the string `%FF?%FE#%FF` unquoted to unicode becomes `�?�#�` (that's 3 U+FFFD replacement
+# characters) instead of b'\xff?\xfe#\xff'.
+def q(uni, safe):                                   # type: (str, bytes) -> str
     out = quote_from_bytes(unquote_to_bytes(uni.encode("utf-8")), safe=safe)    # type: Any
-    return out.encode("utf-8") if PY3 else out
-
-SAFE_HOST_LETTERS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz.1234567890")
-def safe_label(label):                              # type: (str) -> bytes
-    return label.encode("utf-8") if set(label).issubset(SAFE_HOST_LETTERS) else b"xn--" + label.lower().encode("punycode")
+    return out if PY3 else out.decode("utf-8")
 
 def find_urls(string):                              # type: (str) -> Generator[Union[str, Url], None, None]
     last_end = 0
@@ -544,7 +543,7 @@ DEFAULT_CONFIG = {
     SAFE: ("off", """whether the script will convert urls to their safe ascii equivalents. can be either "off", "on" for idna- & percent-encoding, or "base64" for utf-8 base64 encoding""", safe_from_string)
 }   # type: Dict[str, Tuple[str, str, Optional[Callable]]]
 
-C = {}                                              # type: Any
+C = {}                                              # type: Dict[str, Any]
 
 def load_config(*_):                                # type: (Any) -> int
     for name, (default, description, from_string) in DEFAULT_CONFIG.items():
