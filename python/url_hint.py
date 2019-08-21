@@ -23,84 +23,84 @@
 '''
 Why yet another url script? Well, this is what sets this one apart from others:
 
-    * always visible hints for urls (by default looks like ¹http://this)
-    * the hints change as the urls appear. hint ¹ always points to the last url, ² to the second last, etc
-    * you can open these with keyboard shortcuts — just one key press to open an url!
-    * it can be made to work even when your weechat is on a remote machine through your OS or terminal emulator
-    * a ready recipe for opening urls from your PuTTY!
+  * always visible hints for urls (by default looks like ¹http://this)
+  * the hints change as the urls appear. hint ¹ always points to the last url, ² to the second last, etc
+  * you can open these with keyboard shortcuts — just one key press to open an url!
+  * it can be made to work even when your weechat is on a remote machine through your OS or terminal emulator
+  * a ready recipe for opening urls from your PuTTY!
 
 So, this script prepends tiny digits to links, ¹ to the latest url, ² to the second latest, etc.
 Also, it can put these urls in the window title, which you can grab using your OS automation, or your terminal emulator.
 This is an example script in AutoHotkey that works with PuTTY (just install ahk, save this to file.ahk and run it):
 
-    #IfWinActive, ahk_class PuTTY
-        F1::
-        F2::
-        F3::
-        F4::
-        F5::
-            WinGetTitle, title
-            if (!RegExMatch(title, "[^""]+""urls: (.+)""", out))
-                Return
-            url := StrSplit(out1, " ")[SubStr(A_ThisHotkey, 2)]
-            If (RegExMatch(url, "^(?:http|www)"))
-                Run, %url%
+  #IfWinActive, ahk_class PuTTY
+    F1::
+    F2::
+    F3::
+    F4::
+    F5::
+      WinGetTitle, title
+      if (!RegExMatch(title, "[^""]+""urls: (.+)""", out))
         Return
-    #IfWinActive
+      url := StrSplit(out1, " ")[SubStr(A_ThisHotkey, 2)]
+      If (RegExMatch(url, "^(?:http|www)"))
+        Run, %url%
+    Return
+  #IfWinActive
 
 You can use command /url_hint_replace that replaces {url1}, {url2}, etc with according urls and then
 executes the result. For example, the following will open url 1 in your default browser:
 
-    /url_hint_replace /exec -bg xdg-open {url1}
+  /url_hint_replace /exec -bg xdg-open {url1}
 
 or in elinks a new tmux window:
 
-    /url_hint_replace /exec -bg tmux new-window elinks {url1}
+  /url_hint_replace /exec -bg tmux new-window elinks {url1}
 
 You can bind opening of url 1 to f1 and url 2 to f2 like this, for example:
 
-    (press meta-k, then f1. that prints `meta2-11~`)
-    /alias add open_url /url_hint_replace /exec -bg tmux new-window elinks {url$1}
-    /key bind meta2-11~ /open_url 1
-    /key bind meta2-12~ /open_url 2
+  (press meta-k, then f1. that prints `meta2-11~`)
+  /alias add open_url /url_hint_replace /exec -bg tmux new-window elinks {url$1}
+  /key bind meta2-11~ /open_url 1
+  /key bind meta2-12~ /open_url 2
 
-WARNING: Avoid passing urls to the shell as they can contain special characters. If you must do that, consider setting
-the option safe_urls to "base64".
+WARNING: Avoid passing urls to the shell as they can contain special characters.
+If you must do that, consider setting the option safe_urls to "base64".
 
 Configuration (plugins.var.python.url_hint.*):
 
-    * max_lines: the maximum number of lines that contain urls to track ("10")
-    * no_urls_title: title for buffers that don't contain urls ("weechat")
-    * prefix: the beginning of the title when there are urls ("urls: ")
-    * delimiter: what goes between the urls in the title (" ")
-    * postfix: the end of the title when there are urls ("")
-    * hints: comma-separated list of hints. evaluated, can contain colors ("⁰,¹,²,³,⁴,⁵,⁶,⁷,⁸,⁹")
-    * update_title: whether the script should put urls into the title ("on")
-    * safe_urls: whether the script will convert urls to their safe ascii equivalents. can be either "off",
-      "on" for idna- & percent-encoding, or "base64" for utf-8 base64 encoding ("off")
+  * max_lines: the maximum number of lines that contain urls to track ("10")
+  * no_urls_title: title for buffers that don't contain urls ("weechat")
+  * prefix: the beginning of the title when there are urls ("urls: ")
+  * delimiter: what goes between the urls in the title (" ")
+  * postfix: the end of the title when there are urls ("")
+  * hints: comma-separated list of hints. evaluated, can contain colors ("⁰,¹,²,³,⁴,⁵,⁶,⁷,⁸,⁹")
+  * update_title: whether the script should put urls into the title ("on")
+  * safe_urls: whether the script will convert urls to their safe ascii equivalents. can be either "off",
+    "on" for idna- & percent-encoding, or "base64" for utf-8 base64 encoding ("off")
 
 Notes:
 
-    * to avoid auto renaming tmux windows use :set allow-rename off
-    * in PuTTyTray and possibly other clients, window titles are parsed using wrong charset (see bug #88). The option
-      safe_urls must be set to non-"off" value to avoid issues
+  * to avoid auto renaming tmux windows use :set allow-rename off
+  * in PuTTyTray and possibly other clients, window titles are parsed using wrong charset (see bug #88).
+    The option safe_urls must be set to non-"off" value to avoid issues
 
 Limitations:
 
-    * will not work with urls that have color codes inside them
-    * will be somewhat useless in merged and zoomed buffers
+  * will not work with urls that have color codes inside them
+  * will be somewhat useless in merged and zoomed buffers
 
 Version history:
 
-    0.8 (21 august 2019): fixed minor issues in url detections and improved code quality
-    0.7 (4 august 2019): py3 compatibility
-    0.6 (26 june 2017): renamed /url_hint to /url_hint_replace; /url_hint simply prints help now
-    0.5 (22 june 2017): implemented base64 encoding of urls
-    0.4 (18 june 2017): encode fewer characters for safe urls—helps with servers that don't follow the rfc
-    0.3 (10 june 2017): don't fail when safe url encoding fails
-    0.2 (4 june 2017): don't crash if a new buffer has the same pointer as the old one
-    0.1 (30 may 2017): added an option to make safe urls
-    0.0 (6 may 2017): initial release
+  0.8 (21 august 2019): fixed minor issues in url detections and improved code quality
+  0.7 (4 august 2019): py3 compatibility
+  0.6 (26 june 2017): renamed /url_hint to /url_hint_replace; /url_hint simply prints help now
+  0.5 (22 june 2017): implemented base64 encoding of urls
+  0.4 (18 june 2017): encode fewer characters for safe urls—helps with servers that don't follow the rfc
+  0.3 (10 june 2017): don't fail when safe url encoding fails
+  0.2 (4 june 2017): don't crash if a new buffer has the same pointer as the old one
+  0.1 (30 may 2017): added an option to make safe urls
+  0.0 (6 may 2017): initial release
 '''
 
 from __future__ import unicode_literals, print_function
@@ -590,20 +590,20 @@ def install():
 
     if not weechat.hook_command("url_hint_replace", """Replaces {url1} with url hinted with a 1, etc. Example usage:
 
-    Open url 1 in your default browser:
+Open url 1 in your default browser:
 
-      /url_hint_replace /exec -bg xdg-open {url1}
+  /url_hint_replace /exec -bg xdg-open {url1}
 
-    Open url 1 in elinks in a new tmux window:
+Open url 1 in elinks in a new tmux window:
 
-      /url_hint_replace /exec -bg tmux new-window elinks {url1}
+  /url_hint_replace /exec -bg tmux new-window elinks {url1}
 
-    Bind opening of url 1 to F1 and url 2 to F2:
+Bind opening of url 1 to F1 and url 2 to F2:
 
-      (press meta-k, then f1. that prints "meta2-11~")
-      /alias add open_url /url_hint_replace /exec -bg tmux new-window elinks {url$1}
-      /key bind meta2-11~ /open_url 1
-      /key bind meta2-12~ /open_url 2""", "<command>", "", "", "url_hint_replace", ""):
+  (press meta-k, then f1. that prints "meta2-11~")
+  /alias add open_url /url_hint_replace /exec -bg tmux new-window elinks {url$1}
+  /key bind meta2-11~ /open_url 1
+  /key bind meta2-12~ /open_url 2""", "<command>", "", "", "url_hint_replace", ""):
         print_error("could not hook command /url_hint_replace")
 
 ###############################################################################
