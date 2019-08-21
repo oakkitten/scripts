@@ -29,8 +29,8 @@ Why yet another url script? Well, this is what sets this one apart from others:
   * it can be made to work even when your weechat is on a remote machine through your OS or terminal emulator
   * a ready recipe for opening urls from your PuTTY!
 
-So, this script prepends tiny digits to links, ¹ to the latest url, ² to the second latest, etc.
-Also, it can put these urls in the window title, which you can grab using your OS automation, or your terminal emulator.
+So, this script prepends tiny digits to links, ¹ to the latest url, ² to the second latest, etc. \\
+Also, it can put these urls in the window title, which you can grab using your OS automation, or your terminal emulator. \\
 This is an example script in AutoHotkey that works with PuTTY (just install ahk, save this to file.ahk and run it):
 
   #IfWinActive, ahk_class PuTTY
@@ -48,7 +48,7 @@ This is an example script in AutoHotkey that works with PuTTY (just install ahk,
     Return
   #IfWinActive
 
-You can use command /url_hint_replace that replaces {url1}, {url2}, etc with according urls and then
+You can use command /url_hint_replace that replaces {url1}, {url2}, etc with according urls and then \\
 executes the result. For example, the following will open url 1 in your default browser:
 
   /url_hint_replace /exec -bg xdg-open {url1}
@@ -64,7 +64,7 @@ You can bind opening of url 1 to f1 and url 2 to f2 like this, for example:
   /key bind meta2-11~ /open_url 1
   /key bind meta2-12~ /open_url 2
 
-WARNING: Avoid passing urls to the shell as they can contain special characters.
+WARNING: Avoid passing urls to the shell as they can contain special characters. \\
 If you must do that, consider setting the option safe_urls to "base64".
 
 Configuration (plugins.var.python.url_hint.*):
@@ -76,13 +76,13 @@ Configuration (plugins.var.python.url_hint.*):
   * postfix: the end of the title when there are urls ("")
   * hints: comma-separated list of hints. evaluated, can contain colors ("⁰,¹,²,³,⁴,⁵,⁶,⁷,⁸,⁹")
   * update_title: whether the script should put urls into the title ("on")
-  * safe_urls: whether the script will convert urls to their safe ascii equivalents. can be either "off",
+  * safe_urls: whether the script will convert urls to their safe ascii equivalents. can be either "off", \\
     "on" for idna- & percent-encoding, or "base64" for utf-8 base64 encoding ("off")
 
 Notes:
 
   * to avoid auto renaming tmux windows use :set allow-rename off
-  * in PuTTyTray and possibly other clients, window titles are parsed using wrong charset (see bug #88).
+  * in PuTTyTray and possibly other clients, window titles are parsed using wrong charset (see bug #88). \\
     The option safe_urls must be set to non-"off" value to avoid issues
 
 Limitations:
@@ -127,6 +127,7 @@ else:
 
 SCRIPT_NAME = "url_hint"
 SCRIPT_VERSION = "0.8"
+DOC = re.sub(r" *\\\n *", " ", __doc__.strip())
 
 # the following code constructs a simple but neat regular expression for detecting urls
 # it's by no means perfect, but it will detect an url in quotes and parentheses, http iris,
@@ -485,7 +486,7 @@ RE_REP = re.compile(r"{url(\d+)}", re.I)
 
 # simply print help
 def url_hint(_data, _pointer, _command):            # type: (str, str, str) -> int
-    weechat.prnt("", to_weechat(__doc__.strip()))
+    weechat.prnt("", to_weechat(DOC))
     return weechat.WEECHAT_RC_OK
 
 def url_hint_replace(_data, pointer, command):      # type: (str, str, str) -> int
@@ -585,7 +586,7 @@ def install():
     weechat.hook_signal("buffer_switch", "on_buffer_switch", "")
     weechat.hook_config("plugins.var.python." + SCRIPT_NAME + ".*", "load_config", "")
 
-    if not weechat.hook_command("url_hint", to_weechat(__doc__.strip()), "", "", "", "url_hint", ""):
+    if not weechat.hook_command("url_hint", to_weechat(DOC), "", "", "", "url_hint", ""):
         print_error("could not hook command /url_hint")
 
     if not weechat.hook_command("url_hint_replace", """Replaces {url1} with url hinted with a 1, etc. Example usage:
