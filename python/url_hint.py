@@ -92,7 +92,7 @@ Limitations:
 
 Version history:
 
-    0.8 (21 august 2019): added more tests and
+    0.8 (21 august 2019): fixed minor issues in url detections and improved code quality
     0.7 (4 august 2019): py3 compatibility
     0.6 (26 june 2017): renamed /url_hint to /url_hint_replace; /url_hint simply prints help now
     0.5 (22 june 2017): implemented base64 encoding of urls
