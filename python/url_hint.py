@@ -22,7 +22,6 @@
 
 '''
 Why yet another url script? Well, this is what sets this one apart from others:
-
   * always visible hints for urls (by default looks like ¹http://this)
   * the hints change as the urls appear. hint ¹ always points to the last url, ² to the second last, etc
   * you can open these with keyboard shortcuts — just one key press to open an url!
@@ -50,16 +49,12 @@ This is an example script in AutoHotkey that works with PuTTY (just install ahk,
 
 You can use command /url_hint_replace that replaces {url1}, {url2}, etc with according urls and then \\
 executes the result. For example, the following will open url 1 in your default browser:
-
   /url_hint_replace /exec -bg xdg-open {url1}
 
 or in elinks a new tmux window:
-
   /url_hint_replace /exec -bg tmux new-window elinks {url1}
 
-You can bind opening of url 1 to f1 and url 2 to f2 like this, for example:
-
-  (press meta-k, then f1. that prints `meta2-11~`)
+You can bind opening of url 1 to f1 and url 2 to f2 like this, for example (press meta-k, then f1. that prints `meta2-11~`):
   /alias add open_url /url_hint_replace /exec -bg tmux new-window elinks {url$1}
   /key bind meta2-11~ /open_url 1
   /key bind meta2-12~ /open_url 2
@@ -68,7 +63,6 @@ WARNING: Avoid passing urls to the shell as they can contain special characters.
 If you must do that, consider setting the option safe_urls to "base64".
 
 Configuration (plugins.var.python.url_hint.*):
-
   * max_lines: the maximum number of lines that contain urls to track ("10")
   * no_urls_title: title for buffers that don't contain urls ("weechat")
   * prefix: the beginning of the title when there are urls ("urls: ")
@@ -80,18 +74,15 @@ Configuration (plugins.var.python.url_hint.*):
     "on" for idna- & percent-encoding, or "base64" for utf-8 base64 encoding ("off")
 
 Notes:
-
   * to avoid auto renaming tmux windows use :set allow-rename off
   * in PuTTyTray and possibly other clients, window titles are parsed using wrong charset (see bug #88). \\
     The option safe_urls must be set to non-"off" value to avoid issues
 
 Limitations:
-
   * will not work with urls that have color codes inside them
   * will be somewhat useless in merged and zoomed buffers
 
 Version history:
-
   0.8 (21 august 2019): fixed minor issues in url detections and improved code quality
   0.7 (4 august 2019): py3 compatibility
   0.6 (26 june 2017): renamed /url_hint to /url_hint_replace; /url_hint simply prints help now
@@ -108,8 +99,8 @@ import re
 import sys
 from base64 import b64encode
 
-# noinspection PyUnreachableCode
-if False:
+MYPY = False
+if MYPY:
     # noinspection PyUnresolvedReferences
     from typing import Match, Pattern, Generator, List, Union, Optional, Any, Callable, Dict, Tuple
 
@@ -127,107 +118,106 @@ else:
 
 SCRIPT_NAME = "url_hint"
 SCRIPT_VERSION = "0.8"
-DOC = re.sub(r" *\\\n *", " ", __doc__.strip())
+SCRIPT_DOC = re.sub(r" *\\\n *", " ", __doc__.strip())
 
 # the following code constructs a simple but neat regular expression for detecting urls
 # it's by no means perfect, but it will detect an url in quotes and parentheses, http iris,
 # punycode, urls followed by punctuation and such
+def construct_url_finder_pattern():
+    ipv4_segment = r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
+    ipv6_segment = r"[0-9A-Fa-f]{1,4}"
 
-# 00-1f     c0 control chars
-# 20        space
-# 21-2f     !"#$%&'()*+,-./
-# 30-39         0123456789
-# 3a-40     :;<=>?@
-# 41-5a         ABCDEFGHIJKLMNOPQRSTUVWXYZ
-# 5b-60     [\]^_`
-# 61-7a         abcdefghijklmnopqrstuvwxyz
-# 7b-7e     {|}~
-# 7f        del
-# 80-9f     c1 control chars
-# a0        nbsp
+    # 00-1f     c0 control chars
+    # 20        space
+    # 21-2f     !"#$%&'()*+,-./
+    # 30-39         0123456789
+    # 3a-40     :;<=>?@
+    # 41-5a         ABCDEFGHIJKLMNOPQRSTUVWXYZ
+    # 5b-60     [\]^_`
+    # 61-7a         abcdefghijklmnopqrstuvwxyz
+    # 7b-7e     {|}~
+    # 7f        del
+    # 80-9f     c1 control chars
+    # a0        nbsp
+    good_ascii_char = r"[A-Za-z0-9]"
+    bad_char = r"\x00-\x20\x7f-\xa0\ufff0-\uffff\s"
+    good_char = r"[^{bad}]".format(bad=bad_char)
+    good_host_char = r"[^\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\xa0\ufff0-\uffff]"
+    good_tld_char = r"[^\x00-\x40\x5b-\x60\x7b-\xa0\ufff0-\uffff]"
 
-RE_IPV4_SEGMENT = r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
-RE_IPV6_SEGMENT = r"[0-9A-Fa-f]{1,4}"
+    host_segment = r"""{good_host}+(?:-+{good_host}+)*""".format(good_host=good_host_char)
+    tld = r"(?:{good_tld}{{2,}}|xn--{good_ascii}+)".format(good_ascii=good_ascii_char, good_tld=good_tld_char)
 
-RE_GOOD_ASCII_CHAR = r"[A-Za-z0-9]"
-RE_BAD_CHAR = r"\x00-\x20\x7f-\xa0\ufff0-\uffff\s"
-RE_GOOD_CHAR = r"[^{bad}]".format(bad=RE_BAD_CHAR)
-RE_GOOD_HOST_CHAR = r"[^\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\xa0\ufff0-\uffff]"
-RE_GOOD_TLD_CHAR = r"[^\x00-\x40\x5b-\x60\x7b-\xa0\ufff0-\uffff]"
-
-RE_HOST_SEGMENT = r"""{good_host}+(?:-+{good_host}+)*""".format(good_host=RE_GOOD_HOST_CHAR)
-RE_TLD = r"(?:{good_tld}{{2,}}|xn--{good_ascii}+)".format(good_ascii=RE_GOOD_ASCII_CHAR, good_tld=RE_GOOD_TLD_CHAR)
-
-# language=PythonVerboseRegExp
-RE_URL = r"""
-    # url must be preceded by a word boundary, or a weechat color (a control character followed by a digit)
-    (?:(?<=\d)|\b)
-
-    # http:// or www  =1=
-    (https?://|www\.)
-
-    # optional userinfo at  =2=
-    (?:([^{bad}@]*)@)?
-
-    # ip or host  =3=
-    (
-        # ipv4
-        (?:(?:{s4}\.){{3}}{s4})
-    |
-        # ipv6 (no embedded ipv4 tho)
-        \[
-        (?:
-                                          (?:{s6}:){{7}} {s6}
-            |                          :: (?:{s6}:){{6}} {s6}
-            | (?:               {s6})? :: (?:{s6}:){{5}} {s6}
-            | (?:(?:{s6}:)?     {s6})? :: (?:{s6}:){{4}} {s6}
-            | (?:(?:{s6}:){{,2}}{s6})? :: (?:{s6}:){{3}} {s6}
-            | (?:(?:{s6}:){{,3}}{s6})? :: (?:{s6}:){{2}} {s6}
-            | (?:(?:{s6}:){{,4}}{s6})? :: (?:{s6}:)      {s6}
-            | (?:(?:{s6}:){{,5}}{s6})? ::                {s6}
-            | (?:(?:{s6}:){{,6}}{s6})? ::
+    # language=PythonVerboseRegExp
+    url = r"""
+        # url must be preceded by a word boundary, or a weechat color (a control character followed by a digit)
+        (?:(?<=\d)|\b)
+    
+        # http:// or www  =1=
+        (https?://|www\.)
+    
+        # optional userinfo at  =2=
+        (?:([^{bad}@]*)@)?
+    
+        # ip or host  =3=
+        (
+            # ipv4
+            (?:(?:{s4}\.){{3}}{s4})
+        |
+            # ipv6 (no embedded ipv4 tho)
+            \[
+            (?:
+                                              (?:{s6}:){{7}} {s6}
+                |                          :: (?:{s6}:){{6}} {s6}
+                | (?:               {s6})? :: (?:{s6}:){{5}} {s6}
+                | (?:(?:{s6}:)?     {s6})? :: (?:{s6}:){{4}} {s6}
+                | (?:(?:{s6}:){{,2}}{s6})? :: (?:{s6}:){{3}} {s6}
+                | (?:(?:{s6}:){{,3}}{s6})? :: (?:{s6}:){{2}} {s6}
+                | (?:(?:{s6}:){{,4}}{s6})? :: (?:{s6}:)      {s6}
+                | (?:(?:{s6}:){{,5}}{s6})? ::                {s6}
+                | (?:(?:{s6}:){{,6}}{s6})? ::
+            )
+            \]
+        |
+            # domain name (a.b.c.com)
+            {host_segment}
+            (?:\.{host_segment})*
+            \.{tld}
+            
+            # fqdn dot, but only if followed by url-ish things
+            (?:\.(?=/|:\d))?
         )
-        \]
-    |
-        # domain name (a.b.c.com)
-        {host_segment}
-        (?:\.{host_segment})*
-        \.{tld}
-        
-        # fqdn dot, but only if followed by url-ish things
-        (?:\.(?=/|:\d))?
-    )
+    
+        # port?  =4=
+        (:\d{{1,5}})?
+    
+        # / & the rest  =5=
+        (
+            /
+            # hello(world) in "hello(world))"
+            (?:
+                [^{bad}(]*
+                \(
+                [^{bad})]+
+                \)
+            )*
+            # any string (non-greedy!)
+            {good}*?
+        )?
+    
+        # url must be directly followed by:
+        (?=
+            # some possible punctuation
+            # AND space or end of string
+            [\]>,.)!?:'"”@]*
+            (?:[{bad}]|$)
+        )
+        """
+    url = url.format(s4=ipv4_segment, s6=ipv6_segment, bad=bad_char, good=good_char, host_segment=host_segment, tld=tld)
+    return re.compile(url, re.U | re.X | re.I)
+RE_URL = construct_url_finder_pattern()
 
-    # port?  =4=
-    (:\d{{1,5}})?
-
-    # / & the rest  =5=
-    (
-        /
-        # hello(world) in "hello(world))"
-        (?:
-            [^{bad}(]*
-            \(
-            [^{bad})]+
-            \)
-        )*
-        # any string (non-greedy!)
-        {good}*?
-    )?
-
-    # url must be directly followed by:
-    (?=
-        # some possible punctuation
-        # AND space or end of string
-        [\]>,.)!?:'"”@]*
-        (?:[{bad}]|$)
-    )
-    """                                             # type: Any
-RE_URL = RE_URL.format(s4=RE_IPV4_SEGMENT, s6=RE_IPV6_SEGMENT,
-                       bad=RE_BAD_CHAR, good=RE_GOOD_CHAR, host_segment=RE_HOST_SEGMENT, tld=RE_TLD)
-RE_URL = re.compile(RE_URL, re.U | re.X | re.I)
-
-WEECHAT_VERSION, H_BUFFER, H_LINES, H_LINE, H_LINE_DATA, HL_GUI_BUFFERS = None, None, None, None, None, None    # make mypy happy
+H_BUFFER, H_LINES, H_LINE, H_LINE_DATA, H_GUI_BUFFERS = None, None, None, None, None    # make mypy happy
 
 ###############################################################################
 ###############################################################################
@@ -297,8 +287,6 @@ class Url(object):
 #     segment       = *pchar
 #     query         = *( pchar / "/" / "?" )
 #     fragment      = *( pchar / "/" / "?" )
-# quote() takes the rest of unreserved characters by itself, so we only need to adjust it for the rest
-
 SUB_DELIMS = b"!$&'()*+,;="
 SAFE_USERINFO = SUB_DELIMS + b":"
 SAFE_PATH = SUB_DELIMS + b":@"
@@ -307,8 +295,8 @@ SAFE_FRAGMENT = SAFE_QUERY = SUB_DELIMS + b":@" + b"/?"
 # this uses bytes as urls do not necessarily contain unicode in them. for instance,
 # the string `%FF?%FE#%FF` unquoted to unicode becomes `�?�#�` (that's 3 U+FFFD replacement
 # characters) instead of b'\xff?\xfe#\xff'.
-def q(uni, safe):                                   # type: (str, bytes) -> str
-    out = quote_from_bytes(unquote_to_bytes(uni.encode("utf-8")), safe=safe)    # type: Any
+def q(string, safe):                                # type: (str, bytes) -> str
+    out = quote_from_bytes(unquote_to_bytes(string.encode("utf-8")), safe=safe)    # type: Any
     return out if PY3 else out.decode("utf-8")
 
 def find_urls(string):                              # type: (str) -> Generator[Union[str, Url], None, None]
@@ -352,7 +340,7 @@ class Line(object):
     def __init__(self, pointer, message, parts):    # type: (str, str, List[Union[str, Url]]) -> None
         assert pointer
         self.pointer = pointer
-        self.urls = parts[-2::-2]                   # type: Any
+        self.urls = parts[-2::-2]                   # type: List[Url] # type: ignore
         self._data = weechat.hdata_pointer(H_LINE, pointer, "data")
         self._original_message = message
         self._current_message = message
@@ -438,7 +426,7 @@ class Buffer(object):
     # return pointer to the last line, visible or not; None otherwise
     def get_last_line_pointer(self):                # type: () -> Optional[str]
         try:
-            assert weechat.hdata_check_pointer(H_BUFFER, HL_GUI_BUFFERS, self.pointer)
+            assert weechat.hdata_check_pointer(H_BUFFER, H_GUI_BUFFERS, self.pointer)
             own_lines = weechat.hdata_pointer(H_BUFFER, self.pointer, "own_lines"); assert own_lines
             last_line = weechat.hdata_pointer(H_LINES, own_lines, "last_line"); assert last_line
         except AssertionError:
@@ -486,7 +474,7 @@ RE_REP = re.compile(r"{url(\d+)}", re.I)
 
 # simply print help
 def url_hint(_data, _pointer, _command):            # type: (str, str, str) -> int
-    weechat.prnt("", to_weechat(DOC))
+    weechat.prnt("", to_weechat(SCRIPT_DOC))
     return weechat.WEECHAT_RC_OK
 
 def url_hint_replace(_data, pointer, command):      # type: (str, str, str) -> int
@@ -542,7 +530,7 @@ DEFAULT_CONFIG = {
     HINTS: ("⁰,¹,²,³,⁴,⁵,⁶,⁷,⁸,⁹", "comma-separated list of hints. evaluated, can contain colors", hints_from_string),
     UPDATE_TITLE: ("on", "whether the script should put urls into the title", boolean_from_string),
     SAFE: ("off", """whether the script will convert urls to their safe ascii equivalents. can be either "off", "on" for idna- & percent-encoding, or "base64" for utf-8 base64 encoding""", safe_from_string)
-}   # type: Dict[str, Tuple[str, str, Optional[Callable]]]
+}                                                   # type: Dict[str, Tuple[str, str, Optional[Callable]]]
 
 C = {}                                              # type: Dict[str, Any]
 
@@ -565,20 +553,20 @@ def load_config(*_):                                # type: (Any) -> int
 ###############################################################################
 
 def install():
-    global WEECHAT_VERSION, H_BUFFER, H_LINES, H_LINE, H_LINE_DATA, HL_GUI_BUFFERS
+    global H_BUFFER, H_LINES, H_LINE, H_LINE_DATA, H_GUI_BUFFERS
     if not weechat.register(SCRIPT_NAME, "oakkitten", SCRIPT_VERSION, "MIT",
                             "Display hints for urls and open them with keyboard shortcuts", "exit_function", ""):
         raise Exception("Could not register script")
 
-    WEECHAT_VERSION = int(weechat.info_get('version_number', '') or 0)
-    if WEECHAT_VERSION <= 0x00040000:
+    weechat_version = int(weechat.info_get('version_number', '') or 0)
+    if weechat_version <= 0x00040000:
         raise Exception("Need Weechat 0.4 or higher")
 
     H_BUFFER = weechat.hdata_get("buffer")
     H_LINES = weechat.hdata_get("lines")
     H_LINE = weechat.hdata_get("line")
     H_LINE_DATA = weechat.hdata_get("line_data")
-    HL_GUI_BUFFERS = weechat.hdata_get_list(H_BUFFER, "gui_buffers")
+    H_GUI_BUFFERS = weechat.hdata_get_list(H_BUFFER, "gui_buffers")
 
     load_config()
 
@@ -586,22 +574,18 @@ def install():
     weechat.hook_signal("buffer_switch", "on_buffer_switch", "")
     weechat.hook_config("plugins.var.python." + SCRIPT_NAME + ".*", "load_config", "")
 
-    if not weechat.hook_command("url_hint", to_weechat(DOC), "", "", "", "url_hint", ""):
+    if not weechat.hook_command("url_hint", to_weechat(SCRIPT_DOC), "", "", "", "url_hint", ""):
         print_error("could not hook command /url_hint")
 
-    if not weechat.hook_command("url_hint_replace", """Replaces {url1} with url hinted with a 1, etc. Example usage:
+    if not weechat.hook_command("url_hint_replace", """Replaces {url1} with url hinted with a 1, etc. Examples:
 
 Open url 1 in your default browser:
-
   /url_hint_replace /exec -bg xdg-open {url1}
 
 Open url 1 in elinks in a new tmux window:
-
   /url_hint_replace /exec -bg tmux new-window elinks {url1}
 
-Bind opening of url 1 to F1 and url 2 to F2:
-
-  (press meta-k, then f1. that prints "meta2-11~")
+Bind opening of url 1 to F1 and url 2 to F2 (press meta-k, then f1. that prints "meta2-11~"):
   /alias add open_url /url_hint_replace /exec -bg tmux new-window elinks {url$1}
   /key bind meta2-11~ /open_url 1
   /key bind meta2-12~ /open_url 2""", "<command>", "", "", "url_hint_replace", ""):
