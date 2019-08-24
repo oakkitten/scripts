@@ -244,10 +244,7 @@ class Url(object):
     """
     def __init__(self, match):                      # type: (Match) -> None
         self._match = match
-
-    @lazy
-    def exact(self):                                # type: () -> str
-        return self._match.group(0)
+        self.exact = match.group(0)
 
     @lazy
     def safe(self):                                 # type: () -> str
@@ -381,7 +378,7 @@ class Buffer(object):
     pointer (str): a hex pointer to buffer object in weechat
     urls ([Url]): a list of recent urls, in reverse order
 
-    on_message(displayed): *must* be called on every message on a buffer
+    on_message(): called on every visible message on a buffer
     valid(): returns True if this buffer still exists in weechat and is safe to operate on
     redraw(full_reset): redraw all lines. if full_reset is True, restores all lines to their original conditions
     """
@@ -490,7 +487,7 @@ def print_error(text):                              # type: (str) -> None
     weechat.prnt("", to_weechat("%s%s: %s" % (weechat.prefix("error"), SCRIPT_NAME, text)))
 
 def redraw_everything(full_reset):                  # type: (bool) -> int
-    for pointer, buffer in list(buffers.items()):
+    for pointer, buffer in buffers.items():
         buffer.redraw(full_reset=full_reset)
     update_title()
     return weechat.WEECHAT_RC_OK
